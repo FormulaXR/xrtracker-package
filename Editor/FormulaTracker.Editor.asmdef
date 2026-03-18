@@ -1,0 +1,20 @@
+{
+    "name": "FormulaTracker.Editor",
+    "rootNamespace": "IV.FormulaTracker.Editor",
+    "references": [
+        "FormulaTracker.Runtime",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipeline.Universal.ShaderLibrary"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

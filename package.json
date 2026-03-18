@@ -1,0 +1,27 @@
+{
+  "name": "com.formulaxr.tracker",
+  "version": "1.0.0",
+  "displayName": "XRTracker",
+  "description": "6DoF object tracking for Unity. Supports AR Foundation (iOS/Android) and desktop webcams.",
+  "unity": "6000.0",
+  "unityRelease": "0f1",
+  "documentationUrl": "",
+  "changelogUrl": "",
+  "licensesUrl": "",
+  "dependencies": {
+    "com.unity.burst": "1.8.0"
+  },
+  "keywords": [
+    "tracking",
+    "ar",
+    "xr",
+    "6dof",
+    "object-tracking",
+    "formula-tracker",
+    "quest",
+    "arfoundation"
+  ],
+  "author": {
+    "name": "FormulaXR"
+  }
+}
