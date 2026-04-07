@@ -1,0 +1,29 @@
+{
+    "name": "FormulaTracker.Editor",
+    "rootNamespace": "IV.FormulaTracker.Editor",
+    "references": [
+        "FormulaTracker.Runtime",
+        "Unity.RenderPipelines.Universal.Runtime",
+        "Unity.RenderPipeline.Universal.ShaderLibrary",
+        "Unity.XR.ARFoundation",
+        "Unity.XR.CoreUtils",
+        "Unity.InputSystem"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.xr.arfoundation",
+            "expression": "",
+            "define": "HAS_AR_FOUNDATION"
+        }
+    ],
+    "noEngineReferences": false
+}
