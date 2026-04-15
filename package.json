@@ -1,0 +1,25 @@
+{
+  "name": "com.formulaxr.tracker",
+  "version": "1.0.2",
+  "displayName": "XRTracker",
+  "description": "AR object tracking for Unity. Supports AR Foundation (iOS/Android) and desktop webcams.",
+  "unity": "6000.0",
+  "unityRelease": "0f1",
+  "documentationUrl": "https://docs.xrtracker.net",
+  "changelogUrl": "https://docs.xrtracker.net/changelog/",
+  "licensesUrl": "https://docs.xrtracker.net/legal/third-party-notices/",
+  "dependencies": {
+    "com.unity.burst": "1.8.0"
+  },
+  "keywords": [
+    "tracking",
+    "ar",
+    "xr",
+    "object-tracking",
+    "formula-tracker",
+    "arfoundation"
+  ],
+  "author": {
+    "name": "FormulaXR"
+  }
+}

@@ -1,0 +1,8 @@
+# Git LFS for native plugins
+*.dll filter=lfs diff=lfs merge=lfs -text
+*.so filter=lfs diff=lfs merge=lfs -text
+*.a filter=lfs diff=lfs merge=lfs -text
+*.dylib filter=lfs diff=lfs merge=lfs -text
+
+# iOS framework binaries
+Plugins/iOS/opencv2.framework/opencv2 filter=lfs diff=lfs merge=lfs -text

@@ -1,0 +1,38 @@
+FormulaXR Proprietary License
+
+Copyright (c) 2026 FormulaXR. All rights reserved.
+
+This software and associated documentation files (the "Software") are the
+proprietary property of FormulaXR.
+
+Permission is hereby granted to use the Software solely in accordance with
+the license tier obtained (Free, Trial, Developer, or Commercial), subject
+to the following conditions:
+
+1. RESTRICTIONS
+   You may not:
+   - Redistribute, sublicense, sell, or transfer the Software or any portion
+     thereof to any third party.
+   - Reverse engineer, decompile, disassemble, or otherwise attempt to derive
+     the source code of the native components of the Software.
+   - Remove or alter any proprietary notices, labels, or marks on the Software.
+
+2. FREE LICENSE
+   The free license permits use of the Software with a 60-second active
+   tracking time limit per session. No license key is required.
+
+3. TRIAL, DEVELOPER, AND COMMERCIAL LICENSES
+   Extended usage requires a valid license key obtained from FormulaXR.
+   Contact sales@formulaxr.com for licensing options.
+
+4. TERMS OF USE
+   Use of the Software is subject to the FormulaXR Terms of Use available at:
+   https://docs.xrtracker.net/legal/terms/
+
+5. DISCLAIMER
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+   FORMULAXR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+   AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
