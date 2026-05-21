@@ -388,7 +388,7 @@ namespace IV.FormulaTracker
 		[Tooltip("Pixel spacing between sample points along visible edges. " +
 		         "Lower = denser (more accurate, slower). " +
 		         "Higher = sparser (faster).")]
-		[Range(2f, 20f)]
+		[Range(2f, 24f)]
 		[SerializeField]
 		private float _sampleStep = 6f;
 
@@ -432,6 +432,14 @@ namespace IV.FormulaTracker
 		[HideInInspector]
 		[SerializeField]
 		private float _probeMaxResidualPx = 6f;
+
+		[Tooltip("Per-site adaptive contrast threshold (ViSP-style). Each site stores its own " +
+		         "contrast bar based on the first successful image search; subsequent frames use " +
+		         "half of that as the survival threshold (floored at min_gradient × kappa). " +
+		         "Off = legacy global noise floor of 2 × min_gradient × kappa for every site. " +
+		         "Designed to help survival on legitimately weak-contrast edges (white-on-white etc.).")]
+		[SerializeField]
+		private bool _usePerSiteThreshold = true;
 
 		[Tooltip("Detect edges at sharp surface creases (chamfers, holes, fillets). " +
 		         "Requires mesh normals from Unity.")]
@@ -515,6 +523,12 @@ namespace IV.FormulaTracker
 		{
 			get => _creaseEdgeAngle;
 			set => _creaseEdgeAngle = Mathf.Clamp(value, 5f, 90f);
+		}
+
+		public bool UsePerSiteThreshold
+		{
+			get => _usePerSiteThreshold;
+			set => _usePerSiteThreshold = value;
 		}
 	}
 
@@ -700,7 +714,7 @@ namespace IV.FormulaTracker
 		public const int STABILIZATION_FRAMES = 30;
 
 		/// <summary>Quality threshold for "nice" tracking status (vs "poor").</summary>
-		public const float NICE_QUALITY_THRESHOLD = 0.8f;
+		public const float NICE_QUALITY_THRESHOLD = 0.875f;
 
 		/// <summary>Quality threshold below which tracking is considered lost.</summary>
 		public const float LOSE_TRACKING_THRESHOLD = 0.4f;
@@ -729,9 +743,6 @@ namespace IV.FormulaTracker
 
 		/// <summary>Peak decay rate per frame. At 60fps, 0.9995 = ~3% decay per second.</summary>
 		public const float PEAK_DECAY_RATE = 0.9995f;
-
-		/// <summary>Consecutive good frames before exiting SLAM recovery.</summary>
-		public const int STATIONARY_FRAMES_TO_RECOVER = 5;
 		
 		// Edge modality thresholds (different operating range than silhouette)
 		public const float EDGE_QUALITY_TO_START = 0.65f;
@@ -756,7 +767,15 @@ namespace IV.FormulaTracker
 		/// optimizer from drifting too far while the display holds last-good pose.
 		/// Default 0.15s (~9 frames at 60 fps).
 		/// </summary>
-		public const float DEFAULT_CORRECTION_INTERVAL = 0.15f;
+		public const float QUALITY_GATE_CORRECTION_INTERVAL = 0.15f;
+
+		/// <summary>
+		/// Grace period in seconds after quality drops below nice before periodic
+		/// corrections start being fed back to native. Lets the optimizer self-recover
+		/// from brief dips (autofocus, occlusion flicker) without being overridden.
+		/// </summary>
+		public const float QUALITY_GATE_RECOVERY_DELAY = 0.5f;
+
 	}
 
 	public enum TrackingStatus

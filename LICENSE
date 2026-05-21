@@ -6,8 +6,8 @@ This software and associated documentation files (the "Software") are the
 proprietary property of FormulaXR.
 
 Permission is hereby granted to use the Software solely in accordance with
-the license tier obtained (Free, Trial, Developer, or Commercial), subject
-to the following conditions:
+the license tier obtained (Developer or Commercial), subject to the
+following conditions:
 
 1. RESTRICTIONS
    You may not:
@@ -17,13 +17,17 @@ to the following conditions:
      the source code of the native components of the Software.
    - Remove or alter any proprietary notices, labels, or marks on the Software.
 
-2. FREE LICENSE
-   The free license permits use of the Software with a 60-second active
-   tracking time limit per session. No license key is required.
+2. DEVELOPER LICENSE
+   The Developer license is free and permits use of the Software for
+   non-commercial development and evaluation. Tracking output includes a
+   visible watermark. Registration from the Unity Editor is required. The
+   license is valid for one year and renewable at no cost.
 
-3. TRIAL, DEVELOPER, AND COMMERCIAL LICENSES
-   Extended usage requires a valid license key obtained from FormulaXR.
-   Contact sales@formulaxr.com for licensing options.
+3. COMMERCIAL LICENSE
+   Commercial use (including use in production, revenue-generating, or
+   customer-facing applications) requires a Commercial license, sold on a
+   per-device, per-year basis. The Commercial license removes the watermark.
+   Contact sales@formulaxr.com for details.
 
 4. TERMS OF USE
    Use of the Software is subject to the FormulaXR Terms of Use available at:

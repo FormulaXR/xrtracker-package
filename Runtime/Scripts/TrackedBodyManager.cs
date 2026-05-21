@@ -46,6 +46,7 @@ namespace IV.FormulaTracker
 			public Quaternion LastGoodRotation { get; set; }
 			public bool HasLastGoodPose { get; set; }
 			public float TimeSinceLastCorrection { get; set; }
+			public float TimeBelowNice { get; set; }
 			public float LastAcceptedInstantQuality { get; set; }
 			public int RecoveryFrameCount { get; set; }
 
@@ -214,18 +215,16 @@ namespace IV.FormulaTracker
 					// Detection phase: follow camera every render frame
 					body.ApplyDetectorPose();
 				}
+#if HAS_AR_FOUNDATION
 				else if (body.IsStationary && IsARPoseFusionActive
 					&& _bodyStates.TryGetValue(body, out var state))
 				{
 					// Tracking phase: run display lerp every render frame
 					// (state machine + target pose updated per tracking step in OnAfterTrackingStep)
-#if HAS_AR_FOUNDATION
 					bool inAnchorSpace = _arPoseFusion.HasReliableAnchor;
-#else
-					bool inAnchorSpace = false;
-#endif
 					ApplyStoredDisplayPose(body, state, inAnchorSpace);
 				}
+#endif
 			}
 		}
 
@@ -279,6 +278,10 @@ namespace IV.FormulaTracker
 			foreach (TrackedBody body in _bodiesToRemove)
 				_bodyStates.Remove(body);
 			_bodiesToRemove.Clear();
+
+#if HAS_AR_FOUNDATION
+			_arPoseFusion.ClearAnchorUpdatedFlag();
+#endif
 		}
 
 		#endregion
@@ -340,16 +343,6 @@ namespace IV.FormulaTracker
 		}
 
 #if HAS_AR_FOUNDATION
-		/// <summary>
-		/// Stationary mode with world-space (Phase 1) or anchor-space (Phase 2) Tikhonov prior.
-		///
-		/// Phase 1: no session anchor yet. C++ operates in scene-origin coordinates.
-		/// On first nice-quality acceptance, RequestBodyAnchor fires (async). Switchover happens
-		/// in BeforeTrackingStep when the anchor is ready.
-		///
-		/// Phase 2: anchor exists and is tracked. C++ operates in anchor-space coordinates.
-		/// Stored body pose follows ARKit feature corrections via AnchorToWorld.
-		/// </summary>
 		private void ProcessStationary(TrackedBody body, BodyState state)
 		{
 			// Not yet tracking — body follows camera via BeforeTrackingStep.SetWorldPose
@@ -394,6 +387,7 @@ namespace IV.FormulaTracker
 					state.RecoveryFrameCount = 0;
 					StoreAcceptedPose(state, nativePos, nativeRot, inAnchorSpace, instantQuality);
 					state.TimeSinceLastCorrection = 0;
+					state.TimeBelowNice = 0;
 					state.FusionState = BodyFusionState.Accepting;
 
 					// Phase 1: at first nice-quality frame, request session anchor creation (async).
@@ -401,7 +395,7 @@ namespace IV.FormulaTracker
 					// in XRTrackerManager.BeforeTrackingStep when HasReliableAnchor flips to true.
 					if (XRTrackerManager.Instance.UseAnchor && !inAnchorSpace && qualityIsNice)
 					{
-						var localBounds = body.ComputeLocalBounds();
+						Bounds localBounds = body.ComputeLocalBounds();
 						Vector3 boundsCenterWorld = body.transform.TransformPoint(localBounds.center);
 						_arPoseFusion.RequestBodyAnchor(boundsCenterWorld, body.transform.rotation, localBounds, body.transform);
 					}
@@ -415,14 +409,15 @@ namespace IV.FormulaTracker
 			}
 			else
 			{
-				// Quality below nice — don't display the M3T pose. Hold last good pose
-				// (anchor-relative in Phase 2, so it follows ARKit corrections).
-				// Periodically feed AR pose back to native to help recovery.
+				// Quality below nice — don't display native pose. Hold last good pose.
+				// After a grace period, periodically feed pose back to native to help recovery.
 				state.RecoveryFrameCount = 0;
+				state.TimeBelowNice += Time.deltaTime;
 				state.TimeSinceLastCorrection += Time.deltaTime;
 				state.FusionState = BodyFusionState.Holding;
 
-				if (state.TimeSinceLastCorrection >= body.QualityGateCorrectionInterval
+				if (state.TimeBelowNice >= TrackerDefaults.QUALITY_GATE_RECOVERY_DELAY
+					&& state.TimeSinceLastCorrection >= TrackerDefaults.QUALITY_GATE_CORRECTION_INTERVAL
 					&& HasStoredPose(state, inAnchorSpace))
 				{
 					FTTrackingPose pose = inAnchorSpace
@@ -433,21 +428,9 @@ namespace IV.FormulaTracker
 				}
 			}
 
-			// Display: lerp toward stored target pose, expressed in world space.
-			// Phase 2 composes via AnchorToWorld so the body follows ARKit feature corrections automatically.
 			ApplyStoredDisplayPose(body, state, inAnchorSpace);
-
-			// Never auto-reset stationary bodies with AR pose fusion.
-			// AR SLAM recovers on its own; auto-reset would destroy the anchor and stored pose.
 		}
 
-		/// <summary>
-		/// Apply the smooth display lerp toward the stored pose. In Phase 2 the
-		/// stored pose lives in anchor space and is composed via AnchorToWorld
-		/// so the body inherits ARKit feature corrections automatically. In
-		/// Phase 1 it's a direct world-space lerp toward LastGoodPosition.
-		/// No-op when no stored pose exists yet.
-		/// </summary>
 		private void ApplyStoredDisplayPose(TrackedBody body, BodyState state, bool inAnchorSpace)
 		{
 			if (!HasStoredPose(state, inAnchorSpace))
@@ -466,6 +449,13 @@ namespace IV.FormulaTracker
 			{
 				targetPos = state.LastGoodPosition;
 				targetRot = state.LastGoodRotation;
+			}
+
+			// Skip lerp when ARKit shifted the anchor (bundle adjustment) — snap to avoid visible lag
+			if (inAnchorSpace && _arPoseFusion.AnchorUpdatedThisFrame)
+			{
+				body.SetWorldPose(targetPos, targetRot);
+				return;
 			}
 
 			float alpha = ComputeLerpAlpha(body.SmoothTime);
@@ -549,6 +539,7 @@ namespace IV.FormulaTracker
 				}
 			}
 		}
+
 #else
 		private void ProcessStationary(TrackedBody body, BodyState state)
 		{

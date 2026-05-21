@@ -182,8 +182,6 @@ namespace IV.FormulaTracker
 		private Vector3 _customAttachmentPosition;
 		private Quaternion _customAttachmentRotation = Quaternion.identity;
 
-		// AR pose correction interval (seconds) — how often to feed AR pose back to native when quality < nice
-		private float _qualityGateCorrectionInterval = TrackerDefaults.DEFAULT_CORRECTION_INTERVAL;
 		private bool _useCustomNiceQuality;
 		private float _customNiceQualityThreshold = 0.8f;
 
@@ -443,7 +441,7 @@ namespace IV.FormulaTracker
 		/// Averaged edge residual over 30 frames (pixels).
 		/// Used for edge-based quality calculation.
 		/// </summary>
-		internal float EdgeResidualAverage => GetBufferAverage(_edgeResidualBuffer);
+		public float EdgeResidualAverage => GetBufferAverage(_edgeResidualBuffer);
 
 		/// <summary>
 		/// Averaged projection error over 30 frames (degrees).
@@ -477,6 +475,35 @@ namespace IV.FormulaTracker
 		public float EdgeTrackingQuality => ComputeEdgeQuality(EdgeCoverageAverage);
 		public float DepthTrackingQuality => ComputeDepthQuality(CorrespondenceDistanceAverage);
 		public float SilhouetteTrackingQuality => ComputeSilhouetteQuality(HistogramAverage);
+
+		/// <summary>
+		/// Alternative edge quality based on median residual (pixels). Contrast-independent:
+		/// reads how well sites converged, not how strong their image gradients were.
+		/// 1.0 = residual at 0, 0.0 = residual at EDGE_RESIDUAL_MAX. Exposed for comparison;
+		/// not used by gating yet.
+		/// </summary>
+		public float EdgeResidualQuality
+		{
+			get
+			{
+				if (!_enableEdgeTracking || !_lastStatus.HasEdgeModality) return 0;
+				return 1f - Mathf.Clamp01(EdgeResidualAverage / TrackerDefaults.EDGE_RESIDUAL_MAX);
+			}
+		}
+
+		/// <summary>
+		/// Alternative edge quality based on projection error (degrees). Also contrast-independent.
+		/// 1.0 = projection error 0, 0.0 = error at EDGE_PROJECTION_ERROR_BAD. Exposed for comparison;
+		/// not used by gating yet.
+		/// </summary>
+		public float EdgeProjectionQuality
+		{
+			get
+			{
+				if (!_enableEdgeTracking || !_lastStatus.HasEdgeModality) return 0;
+				return 1f - Mathf.Clamp01(ProjectionErrorAverage / TrackerDefaults.EDGE_PROJECTION_ERROR_BAD);
+			}
+		}
 
 		/// <summary>
 		/// Instant tracking quality (0-1) from the current frame only (not averaged).
@@ -643,9 +670,6 @@ namespace IV.FormulaTracker
 			get => _customQualityToStop;
 			set => _customQualityToStop = Mathf.Clamp01(value);
 		}
-
-		// Quality gate tuning (change at runtime for testing)
-		public float QualityGateCorrectionInterval { get => _qualityGateCorrectionInterval; set => _qualityGateCorrectionInterval = value; }
 
 		public bool UseCustomNiceQuality { get => _useCustomNiceQuality; set => _useCustomNiceQuality = value; }
 		public float CustomNiceQualityThreshold { get => _customNiceQualityThreshold; set => _customNiceQualityThreshold = value; }
@@ -1514,6 +1538,7 @@ namespace IV.FormulaTracker
 				// Hardcoded defaults (change here to test alternatives)
 				edge_use_normal_direction = 1,
 				edge_use_laplacian_edge_detection = 1,
+				edge_use_per_site_threshold = _edgeTracking.UsePerSiteThreshold ? 1 : 0,
 				edge_inward_search_ratio = 1f,
 				edge_use_compute_pipeline = 1,
 				edge_use_illumination_compensation = 1,

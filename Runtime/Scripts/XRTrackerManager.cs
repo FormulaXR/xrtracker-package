@@ -110,10 +110,8 @@ namespace IV.FormulaTracker
 		[Tooltip("Number of pose update iterations per correspondence. Higher = more refined pose, slower.")]
 		[SerializeField, Range(1, 5), FormerlySerializedAs("_nUpdateIterations")]
 		private int _updateIterations = 2;
-
-		[Tooltip("Render resolution for the shared edge normal renderer. " +
-		         "Higher = more edge sites but slower renders.")]
-		[SerializeField, Range(256, 2048)]
+		
+		// [SerializeField, Range(256, 2048)]
 		private int _edgeRenderResolution = 512;
 
 		[Tooltip("Main camera used for tracking. If not set, Camera.main will be used.")] [SerializeField]

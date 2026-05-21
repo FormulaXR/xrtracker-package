@@ -32,6 +32,7 @@ namespace IV.FormulaTracker.Editor
 
 		// AR Foundation (conditional)
 		private SerializedProperty _useARPoseFusion;
+		private SerializedProperty _useAnchor;
 
 		private void OnEnable()
 		{
@@ -52,8 +53,9 @@ namespace IV.FormulaTracker.Editor
 
 			_mainCamera = serializedObject.FindProperty("_mainCamera");
 
-			// AR Foundation field (may not exist if HAS_AR_FOUNDATION not defined)
+			// AR Foundation fields (may not exist if HAS_AR_FOUNDATION not defined)
 			_useARPoseFusion = serializedObject.FindProperty("_useARPoseFusion");
+			_useAnchor = serializedObject.FindProperty("_useAnchor");
 		}
 
 		public override void OnInspectorGUI()
@@ -249,6 +251,14 @@ namespace IV.FormulaTracker.Editor
 			{
 				EditorGUILayout.PropertyField(_useARPoseFusion,
 					new GUIContent("AR Foundation Fusion", "Use AR Foundation's world tracking to stabilize pose when tracking quality drops"));
+
+				if (_useAnchor != null && _useARPoseFusion.boolValue)
+				{
+					EditorGUI.indentLevel++;
+					EditorGUILayout.PropertyField(_useAnchor,
+						new GUIContent("Use AR Anchor", "Use AR session anchor to stabilize the tracking reference frame. Requires an ARAnchorManager in the scene. When off, tracking operates in world-origin coordinates (less stable over time)."));
+					EditorGUI.indentLevel--;
+				}
 			}
 		}
 

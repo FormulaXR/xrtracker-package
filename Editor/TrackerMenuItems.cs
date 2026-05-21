@@ -25,7 +25,7 @@ namespace IV.FormulaTracker.Editor
 			var arSession = UnityEngine.Object.FindAnyObjectByType<ARSession>();
 			if (arSession == null)
 				InvokeARFoundationUtil("SceneUtils", "CreateARSessionWithParent", root.transform);
-
+   
 			// Reuse existing XR Origin or create one under root (via Unity's internal util)
 			var xrOrigin = UnityEngine.Object.FindAnyObjectByType<XROrigin>();
 			if (xrOrigin == null)

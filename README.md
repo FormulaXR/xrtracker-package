@@ -40,13 +40,13 @@ Follow the [Quick Start guide](https://docs.xrtracker.net/getting-started/quick-
 
 - Documentation: [docs.xrtracker.net](https://docs.xrtracker.net)
 - Email: [support@formulaxr.com](mailto:support@formulaxr.com)
-- Discord: [Developer Community](https://discord.gg/dtHEbC9V)
+- Discord: [Developer Community](https://discord.gg/UCZXHr3S)
 - Issues: [GitHub Issues](https://github.com/FormulaXR/xrtracker-package/issues)
 
 ## License
 
-XRTracker works out of the box with a free license. Tracking is limited to 60 seconds of active tracking time per session. Restart the Unity Editor or app to reset the timer.
+XRTracker is free for development. Register a free Developer license from the Unity Editor — non-commercial use, includes a subtle watermark, renewable yearly.
 
-For a 15-day unlimited trial or to purchase a Developer/Commercial license, contact [sales@formulaxr.com](mailto:sales@formulaxr.com).
+For commercial use (no watermark, per-device/year), contact [sales@formulaxr.com](mailto:sales@formulaxr.com).
 
 Proprietary — [FormulaXR](https://xrproj.com). See [LICENSE](LICENSE) and [Terms of Use](https://docs.xrtracker.net/legal/terms/) for details.

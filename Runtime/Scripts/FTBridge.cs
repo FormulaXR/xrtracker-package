@@ -1076,6 +1076,7 @@ namespace IV.FormulaTracker
 		public float edge_ncc_min_correlation;
 		public int edge_use_normal_direction;
 		public int edge_use_laplacian_edge_detection;
+		public int edge_use_per_site_threshold;
 		public float edge_inward_search_ratio;
 		public int edge_use_compute_pipeline;
 		public int edge_use_illumination_compensation;
@@ -1129,6 +1130,7 @@ namespace IV.FormulaTracker
 				edge_ncc_min_correlation = 0.7f,
 				edge_use_normal_direction = 1,
 				edge_use_laplacian_edge_detection = 1,
+				edge_use_per_site_threshold = 1,
 				edge_inward_search_ratio = 1f,
 				edge_use_compute_pipeline = 1,
 				edge_use_illumination_compensation = 1,

@@ -24,6 +24,8 @@ namespace IV.FormulaTracker
 		private bool _hasRaycastManager;
 
 		private readonly List<ARRaycastHit> _raycastHits = new();
+		private bool _listeningToAnchorEvents;
+		private bool _anchorUpdatedThisFrame;
 
 		/// <summary>
 		/// Whether AR Foundation is available (ARSession exists and enabled).
@@ -62,6 +64,17 @@ namespace IV.FormulaTracker
 		/// Phase 2 (anchored) tracking is gated on this. When false, fall back to Phase 1 (world-origin) behavior.
 		/// </summary>
 		public bool HasReliableAnchor => _bodyAnchor != null && _bodyAnchor.trackingState == TrackingState.Tracking;
+
+		/// <summary>
+		/// True when ARKit updated the session anchor this frame (bundle adjustment).
+		/// Display path should snap instead of lerping.
+		/// </summary>
+		public bool AnchorUpdatedThisFrame => _anchorUpdatedThisFrame;
+
+		/// <summary>
+		/// Clear the per-frame anchor update flag. Call after display poses have been applied.
+		/// </summary>
+		public void ClearAnchorUpdatedFlag() => _anchorUpdatedThisFrame = false;
 
 		/// <summary>
 		/// Detect AR Foundation availability by finding ARSession in scene. Also caches the ARAnchorManager if present.
@@ -116,74 +129,29 @@ namespace IV.FormulaTracker
 		}
 
 		/// <summary>
-		/// Screen-space raycast from projected bounds points to find a feature-rich anchor position.
-		/// Tries center + 4 edges of the bounding box projected to screen space.
-		/// Picks the hit closest to the bounds center in world space.
-		/// Falls back to bounds center if no hits.
+		/// Raycast downward from the body's bounds center to find a surface below (table, floor, workbench).
+		/// These surfaces tend to have better ARKit features than the object itself.
+		/// Falls back to bounds center if no hit.
 		/// </summary>
 		private Pose FindBestAnchorPose(Vector3 boundsCenter, Bounds localBounds, Transform bodyTransform)
 		{
 			var fallback = new Pose(boundsCenter, Quaternion.identity);
 
-			if (!_hasRaycastManager || _cameraTransform == null)
+			if (!_hasRaycastManager)
 			{
 				Debug.Log("[ARPoseFusion] No ARRaycastManager — anchor at bounds center");
 				return fallback;
 			}
 
-			var cam = _cameraTransform.GetComponent<Camera>();
-			if (cam == null)
+			if (_arRaycastManager.Raycast(new Ray(boundsCenter, Vector3.down), _raycastHits, TrackableType.AllTypes)
+				&& _raycastHits.Count > 0)
 			{
-				Debug.Log("[ARPoseFusion] No Camera component — anchor at bounds center");
-				return fallback;
+				var hit = _raycastHits[0];
+				Debug.Log($"[ARPoseFusion] Anchor at surface below body {hit.pose.position} (dist={hit.distance:F3}m)");
+				return hit.pose;
 			}
 
-			// Build 5 world-space probe points from the bounding box
-			var extents = localBounds.extents;
-			var probePoints = new Vector3[]
-			{
-				boundsCenter,
-				bodyTransform.TransformPoint(localBounds.center + new Vector3(extents.x, 0, 0)),
-				bodyTransform.TransformPoint(localBounds.center + new Vector3(-extents.x, 0, 0)),
-				bodyTransform.TransformPoint(localBounds.center + new Vector3(0, extents.y, 0)),
-				bodyTransform.TransformPoint(localBounds.center + new Vector3(0, -extents.y, 0)),
-			};
-
-			Pose bestPose = fallback;
-			float bestDistSq = float.MaxValue;
-			bool found = false;
-
-			foreach (var worldPoint in probePoints)
-			{
-				Vector3 screenPoint = cam.WorldToScreenPoint(worldPoint);
-
-				// Skip if behind camera
-				if (screenPoint.z <= 0)
-					continue;
-
-				if (_arRaycastManager.Raycast(new Vector2(screenPoint.x, screenPoint.y), _raycastHits, TrackableType.AllTypes)
-					&& _raycastHits.Count > 0)
-				{
-					foreach (var hit in _raycastHits)
-					{
-						float distSq = (hit.pose.position - boundsCenter).sqrMagnitude;
-						if (distSq < bestDistSq)
-						{
-							bestDistSq = distSq;
-							bestPose = hit.pose;
-							found = true;
-						}
-					}
-				}
-			}
-
-			if (found)
-			{
-				Debug.Log($"[ARPoseFusion] Anchor at raycast hit {bestPose.position} (dist={Mathf.Sqrt(bestDistSq):F3}m from body)");
-				return bestPose;
-			}
-
-			Debug.Log("[ARPoseFusion] No raycast hits — anchor at bounds center");
+			Debug.Log("[ARPoseFusion] No surface below body — anchor at bounds center");
 			return fallback;
 		}
 
@@ -196,7 +164,8 @@ namespace IV.FormulaTracker
 				{
 					_bodyAnchor = result.value;
 					Debug.Log($"[ARPoseFusion] Session anchor created at {worldPosition}");
-					AttachDebugMarker(_bodyAnchor.transform);
+					// AttachDebugMarker(_bodyAnchor.transform);
+					SubscribeToAnchorEvents();
 				}
 				else
 				{
@@ -232,12 +201,44 @@ namespace IV.FormulaTracker
 			renderer.receiveShadows = false;
 		}
 
+		private void SubscribeToAnchorEvents()
+		{
+			if (_listeningToAnchorEvents || _arAnchorManager == null)
+				return;
+			_arAnchorManager.trackablesChanged.AddListener(OnAnchorsChanged);
+			_listeningToAnchorEvents = true;
+		}
+
+		private void UnsubscribeFromAnchorEvents()
+		{
+			if (!_listeningToAnchorEvents || _arAnchorManager == null)
+				return;
+			_arAnchorManager.trackablesChanged.RemoveListener(OnAnchorsChanged);
+			_listeningToAnchorEvents = false;
+		}
+
+		private void OnAnchorsChanged(ARTrackablesChangedEventArgs<ARAnchor> args)
+		{
+			if (_bodyAnchor == null)
+				return;
+
+			foreach (var anchor in args.updated)
+			{
+				if (anchor != _bodyAnchor)
+					continue;
+
+				_anchorUpdatedThisFrame = true;
+				return;
+			}
+		}
+
 		/// <summary>
 		/// Destroy the session anchor and reset all anchor state.
 		/// Called on tracking reset so the system returns to Phase 1 (world-origin).
 		/// </summary>
 		public void DestroyAnchor()
 		{
+			UnsubscribeFromAnchorEvents();
 			if (_bodyAnchor != null)
 			{
 				Debug.Log("[ARPoseFusion] Destroying session anchor (tracking reset)");

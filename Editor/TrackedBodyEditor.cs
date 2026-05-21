@@ -889,6 +889,12 @@ namespace IV.FormulaTracker.Editor
 								"Translation threshold in meters to trigger keyframe refresh."));
 						EditorGUI.indentLevel--;
 					}
+					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_usePerSiteThreshold"),
+						new GUIContent("Per-Site Contrast Threshold",
+							"ViSP-style adaptive threshold. Each site stores its own contrast bar set " +
+							"on first successful search; subsequent frames use half of it as the floor " +
+							"(min: min_gradient × kappa). Off = legacy global 2 × min_gradient × kappa floor. " +
+							"Designed to help survival on weak-contrast edges. Takes effect on next body registration."));
 					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_enableCreaseEdges"));
 					if (_edgeModality.FindPropertyRelative("_enableCreaseEdges").boolValue)
 					{
@@ -896,8 +902,8 @@ namespace IV.FormulaTracker.Editor
 						EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_creaseEdgeAngle"));
 						EditorGUI.indentLevel--;
 					}
-					// Search Radius Scales and Standard Deviations hidden from inspector.
-					// Still settable via script (EdgeTrackingSettings).
+					// Search Radius Scales and Standard Deviations hidden from inspector.
+					// Still settable via script (EdgeTrackingSettings).
 				}
 				catch (System.ArgumentException) { }
 			}
@@ -1035,12 +1041,15 @@ namespace IV.FormulaTracker.Editor
 				{
 					EditorGUILayout.Space(2);
 					EditorGUILayout.LabelField("Edge Tracking", EditorStyles.miniLabel);
-					EditorGUILayout.Slider("  Edge Quality", trackedBody.EdgeTrackingQuality, 0f, 1f);
+					EditorGUILayout.Slider("  Edge Quality (gating)", trackedBody.EdgeTrackingQuality, 0f, 1f);
 					EditorGUILayout.Slider("  Edge Coverage (valid/total)", trackedBody.EdgeCoverageAverage, 0f, 1f);
 					float trackingPct = status.n_total_edge_sites > 0 ? 100f * status.n_tracking_edge_sites / status.n_total_edge_sites : 0f;
 					EditorGUILayout.LabelField("  Tracking Coverage", $"{status.n_tracking_edge_sites} / {status.n_total_edge_sites} ({trackingPct:F0}%)");
 					EditorGUILayout.Slider("  Projection Error (°)", trackedBody.ProjectionErrorAverage, 0f, 90f);
 					EditorGUILayout.FloatField("  Median Residual (px)", status.mean_edge_residual);
+					EditorGUILayout.LabelField("  Alt. quality (not gating)", EditorStyles.miniLabel);
+					EditorGUILayout.Slider("    From Residual", trackedBody.EdgeResidualQuality, 0f, 1f);
+					EditorGUILayout.Slider("    From Projection Error", trackedBody.EdgeProjectionQuality, 0f, 1f);
 				}
 			}
 

@@ -1,6 +1,6 @@
 {
   "name": "com.formulaxr.tracker",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "displayName": "XRTracker",
   "description": "AR object tracking for Unity. Supports AR Foundation (iOS/Android) and desktop webcams.",
   "unity": "6000.0",
