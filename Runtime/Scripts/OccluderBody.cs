@@ -1,31 +1,33 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 
 namespace IV.FormulaTracker
 {
 	/// <summary>
-	/// A body that only contributes to occlusion rendering (not tracked).
-	/// Use for hands, tools, scene geometry, or parts being inserted but not yet validated.
-	/// Much simpler than TrackedBody - no tracking, no silhouette model, just mesh + pose.
-	/// Unity sends world pose to C++ each frame.
+	/// A body that only contributes to occlusion rendering and is not tracked.
+	/// Use it for hands, tools, scene geometry, or parts that are being inserted but are not yet validated.
+	/// It is much simpler than a TrackedBody, because it has no tracking and no silhouette model, only a mesh and a pose.
+	/// Unity sends the pose to the native plugin before each tracking step.
 	/// </summary>
 	public class OccluderBody : MonoBehaviour
 	{
 		[SerializeField]
-		[Tooltip("Unique identifier for this occluder body. Auto-generated from GameObject name if empty.")]
+		[Tooltip("Unique identifier for this occluder body. Adding the component fills it with the GameObject name. Registration uses the value as it is, so give every occluder body its own identifier.")]
 		private string _bodyId;
 
 		[SerializeField]
-		[Tooltip("Mesh filters to use for occlusion. If empty, will auto-collect from children.")]
+		[Tooltip("Mesh filters to use for occlusion. Adding the component collects the mesh filters of its children, and the Add Child Meshes context menu entry collects them again. Registration fails with an error while the list is empty.")]
 		private List<MeshFilter> _meshFilters = new();
 
 		[SerializeField]
-		[Tooltip("Scale factor for geometry (e.g., 0.001 for mm meshes).")]
+		[Tooltip("Size of one mesh unit in meters, for example 0.001 for a mesh modeled in millimeters.")]
 		private float _geometryUnitInMeter = 1;
 
 		// Registration state
 		private bool _isRegistered;
+		private bool _nativePoseWritePending;
 		private CombinedMeshData _meshData;
+		private XRTrackerManager _stepSource;
 
 		/// <summary>
 		/// Unique identifier for this occluder body.
@@ -36,6 +38,9 @@ namespace IV.FormulaTracker
 		/// Whether this occluder body is registered with the native tracker.
 		/// </summary>
 		public bool IsRegistered => _isRegistered;
+
+		/// <summary>True when the last out-of-frame native pose write was refused.</summary>
+		internal bool NativePoseWritePending => _nativePoseWritePending;
 
 		/// <summary>
 		/// The mesh filters used by this occluder body.
@@ -75,11 +80,12 @@ namespace IV.FormulaTracker
 			RegisterBody();
 		}
 
-		private void LateUpdate()
+		// The pose is written in the window before a step, where no step runs on the worker thread. A write from LateUpdate would land
+		// while the previous frame's step is still reading the occluder.
+		private void OnBeforeTrackingStep()
 		{
 			if (!_isRegistered) return;
 
-			// Update pose each frame
 			UpdateNativePose();
 		}
 
@@ -97,7 +103,7 @@ namespace IV.FormulaTracker
 
 			if (!MeshCombiner.Validate(_meshFilters, out string error))
 			{
-				Debug.LogError($"[OccluderBody] {_bodyId}: {error}");
+				Debug.LogError($"[OccluderBody] {_bodyId} could not register ({error}).");
 				return;
 			}
 
@@ -105,6 +111,7 @@ namespace IV.FormulaTracker
 			_meshData = MeshCombiner.Combine(_meshFilters, transform);
 
 			// Register with native
+			XRTrackerManager.WaitForTrackingStepToReturn();
 			int result = FTBridge.FT_RegisterOccluderBody(
 				_bodyId,
 				_meshData.Vertices.ToArray(),
@@ -115,16 +122,20 @@ namespace IV.FormulaTracker
 
 			if (result != FTErrorCode.OK)
 			{
-				Debug.LogError($"[OccluderBody] {_bodyId}: Registration failed with error {result}");
+				Debug.LogError($"[OccluderBody] {_bodyId} could not register (error {result}).");
 				_meshData.Dispose();
 				return;
 			}
 
 			_isRegistered = true;
-			Debug.Log($"[OccluderBody] {_bodyId}: Registered");
+			Debug.Log($"[OccluderBody] {_bodyId} registered.");
 
 			// Set initial pose
 			UpdateNativePose();
+
+			_stepSource = XRTrackerManager.Instance;
+			if (_stepSource != null)
+				_stepSource.OnBeforeTrackingStep += OnBeforeTrackingStep;
 		}
 
 		/// <summary>
@@ -134,13 +145,18 @@ namespace IV.FormulaTracker
 		{
 			if (!_isRegistered) return;
 
+			if (_stepSource != null)
+				_stepSource.OnBeforeTrackingStep -= OnBeforeTrackingStep;
+			_stepSource = null;
+
+			XRTrackerManager.WaitForTrackingStepToReturn();
 			FTBridge.FT_UnregisterOccluderBody(_bodyId);
 
 			if (_meshData.Vertices.IsCreated)
 				_meshData.Dispose();
 
 			_isRegistered = false;
-			Debug.Log($"[OccluderBody] {_bodyId}: Unregistered");
+			Debug.Log($"[OccluderBody] {_bodyId} unregistered.");
 		}
 
 		#endregion
@@ -175,7 +191,10 @@ namespace IV.FormulaTracker
 				rot_w = -cameraRelativeRot.w
 			};
 
-			FTBridge.FT_SetOccluderPose(_bodyId, ref pose);
+			// The write is not part of the frame decision, so a failure does not drop
+			// the step. It stays pending and the next step's write retries it.
+			_nativePoseWritePending = !FrameWriteGuard.RecordOutOfFrame(
+				FTBridge.FT_SetOccluderPose(_bodyId, ref pose), "FT_SetOccluderPose");
 		}
 
 		#endregion

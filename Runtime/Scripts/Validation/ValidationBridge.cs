@@ -33,7 +33,7 @@ namespace IV.FormulaTracker.Validation
 		Correlation = 0,     // Higher is better, range [-1, 1]
 		ChiSquare = 1,       // Lower is better, range [0, inf)
 		Intersection = 2,    // Higher is better
-		Bhattacharyya = 3    // Lower is better, range [0, 1]
+		HistogramOverlap = 3    // Lower is better, range [0, 1]
 	}
 
 	/// <summary>
@@ -49,9 +49,9 @@ namespace IV.FormulaTracker.Validation
 	}
 
 	/// <summary>
-	/// P/Invoke declarations for validation zone APIs
+	/// P/Invoke declarations for validation zone APIs. The validation zone components call them, so they are internal.
 	/// </summary>
-	public static class ValidationBridge
+	internal static class ValidationBridge
 	{
 #if UNITY_IOS && !UNITY_EDITOR
 		private const string DLL_NAME = "__Internal";
@@ -65,13 +65,13 @@ namespace IV.FormulaTracker.Validation
 		/// Create a validation zone attached to a tracked body.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
-		public static extern int FT_CreateValidationZone(ref FTValidationZoneConfig config);
+		internal static extern int FT_CreateValidationZone(ref FTValidationZoneConfig config);
 
 		/// <summary>
 		/// Update validation zone parameters.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_UpdateValidationZone(
+		internal static extern int FT_UpdateValidationZone(
 			string zoneId,
 			float posX, float posY, float posZ,
 			float rotX, float rotY, float rotZ, float rotW,
@@ -82,7 +82,7 @@ namespace IV.FormulaTracker.Validation
 		/// Remove a validation zone.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_RemoveValidationZone(string zoneId);
+		internal static extern int FT_RemoveValidationZone(string zoneId);
 
 		#endregion
 
@@ -92,7 +92,7 @@ namespace IV.FormulaTracker.Validation
 		/// Add a template validator to a zone.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_AddTemplateValidator(
+		internal static extern int FT_AddTemplateValidator(
 			string zoneId,
 			ref FTTemplateValidatorConfig config,
 			IntPtr templateRGBA,
@@ -104,7 +104,7 @@ namespace IV.FormulaTracker.Validation
 		/// Compares color distribution instead of pixel positions.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_AddHistogramValidator(
+		internal static extern int FT_AddHistogramValidator(
 			string zoneId,
 			ref FTHistogramValidatorConfig config,
 			IntPtr templateRGBA,
@@ -115,7 +115,7 @@ namespace IV.FormulaTracker.Validation
 		/// Remove a validator from a zone.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_RemoveValidator(string zoneId, string validatorId);
+		internal static extern int FT_RemoveValidator(string zoneId, string validatorId);
 
 		#endregion
 
@@ -125,7 +125,7 @@ namespace IV.FormulaTracker.Validation
 		/// Process validation for a single zone.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_ProcessValidation(
+		internal static extern int FT_ProcessValidation(
 			string zoneId,
 			float trackingQuality,
 			out FTZoneValidationResult result);
@@ -134,7 +134,7 @@ namespace IV.FormulaTracker.Validation
 		/// Process validation for all zones.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
-		public static extern int FT_ProcessAllValidations(
+		internal static extern int FT_ProcessAllValidations(
 			[Out] FTZoneValidationResult[] results,
 			int maxResults,
 			out int numResults);
@@ -143,7 +143,7 @@ namespace IV.FormulaTracker.Validation
 		/// Check if a zone is ready for validation (without running validators).
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_CheckZoneReadiness(
+		internal static extern int FT_CheckZoneReadiness(
 			string zoneId,
 			float trackingQuality,
 			out FTReadinessResult result);
@@ -152,7 +152,7 @@ namespace IV.FormulaTracker.Validation
 		/// Get individual validator result (call after FT_ProcessValidation).
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_GetValidatorResult(
+		internal static extern int FT_GetValidatorResult(
 			string zoneId,
 			int validatorIndex,
 			out FTValidatorResult result);
@@ -165,7 +165,7 @@ namespace IV.FormulaTracker.Validation
 		/// Get the sampled image for a zone (for debugging/visualization).
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-		public static extern int FT_GetSampledImage(
+		internal static extern int FT_GetSampledImage(
 			string zoneId,
 			IntPtr rgbData,
 			int maxWidth,
@@ -181,13 +181,13 @@ namespace IV.FormulaTracker.Validation
 		/// Clear all validation zones.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
-		public static extern void FT_ClearValidationZones();
+		internal static extern void FT_ClearValidationZones();
 
 		/// <summary>
 		/// Get number of registered validation zones.
 		/// </summary>
 		[DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl)]
-		public static extern int FT_GetValidationZoneCount();
+		internal static extern int FT_GetValidationZoneCount();
 
 		#endregion
 	}

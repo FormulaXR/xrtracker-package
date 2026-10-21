@@ -10,7 +10,7 @@ namespace IV.FormulaTracker
 	/// Runtime-compatible silhouette model generation utilities.
 	/// Used by both Editor tooling and XRProj save pipeline.
 	/// </summary>
-	public static class SilhouetteModelGeneratorCore
+	internal static class SilhouetteModelGeneratorCore
 	{
 		/// <summary>
 		/// Generate silhouette model file from mesh data.

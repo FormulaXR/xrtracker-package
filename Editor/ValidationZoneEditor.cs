@@ -177,7 +177,7 @@ namespace IV.FormulaTracker.Editor
 						"Correlation: General purpose, measures linear correlation (recommended)\n" +
 						"Chi-Square: Strict matching, penalizes large differences heavily\n" +
 						"Intersection: Measures histogram overlap, good for partial matches\n" +
-						"Bhattacharyya: Statistical distance, robust to minor color variations"));
+						"Histogram Overlap: Statistical distance, robust to minor color variations"));
 					EditorGUILayout.PropertyField(_useHueOnly, new GUIContent("Use Hue Only",
 						"Use only Hue channel, ignoring saturation and brightness. More robust to lighting changes but less discriminative for colors with similar hue."));
 					EditorGUILayout.PropertyField(_numBins, new GUIContent("Histogram Bins",

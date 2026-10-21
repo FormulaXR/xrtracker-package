@@ -280,7 +280,7 @@ namespace IV.FormulaTracker.Validation
 			_lastAutoValidateTime = Time.time;
 
 			// Get tracking quality from parent body
-			float trackingQuality = _parentBody.TrackingQuality;
+			float trackingQuality = _parentBody.DecisionAverageQuality;
 			_lastValidationResult = ProcessValidation(trackingQuality);
 		}
 

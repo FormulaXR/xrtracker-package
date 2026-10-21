@@ -4,8 +4,8 @@ AR object tracking plugin for Unity. Track real-world objects in real time using
 
 ## Supported Platforms
 
-- **iOS** — AR Foundation with ARKit
-- **Android** — AR Foundation with ARCore
+- **iOS** — AR Foundation integration
+- **Android** — AR Foundation integration
 - **Desktop** — Webcam support for development
 
 ## Installation
@@ -25,7 +25,7 @@ To pin a specific version:
 ```json
 {
   "dependencies": {
-    "com.formulaxr.tracker": "https://github.com/FormulaXR/xrtracker-package.git#v1.0.0"
+    "com.formulaxr.tracker": "https://github.com/FormulaXR/xrtracker-package.git#v2.0.0"
   }
 }
 ```
@@ -40,7 +40,7 @@ Follow the [Quick Start guide](https://docs.xrtracker.net/getting-started/quick-
 
 - Documentation: [docs.xrtracker.net](https://docs.xrtracker.net)
 - Email: [support@formulaxr.com](mailto:support@formulaxr.com)
-- Discord: [Developer Community](https://discord.gg/UCZXHr3S)
+- Discord: [Developer Community](https://discord.gg/6CZUZvMfvC)
 - Issues: [GitHub Issues](https://github.com/FormulaXR/xrtracker-package/issues)
 
 ## License

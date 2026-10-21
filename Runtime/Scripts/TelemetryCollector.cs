@@ -10,7 +10,7 @@ namespace IV.FormulaTracker
 	{
 		private const string METRICS_URL = "https://api.xrtracker.net/metrics";
 		private const float HEARTBEAT_INTERVAL = 300f; // 5 minutes
-		private const string VERSION = "1.0.0";
+		internal const string VERSION = "2.0.0";
 
 		private string _sessionId;
 		private string _licenseId;

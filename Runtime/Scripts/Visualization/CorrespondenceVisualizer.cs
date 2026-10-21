@@ -4,7 +4,7 @@ using UnityEngine;
 namespace IV.FormulaTracker
 {
 	/// <summary>
-	/// Fetches correspondence data from M3T's region/depth modalities each frame
+	/// Fetches correspondence data from the native tracker's region and depth modalities each frame
 	/// and builds a line mesh for visualization. Works with CorrespondenceFeature
 	/// (ScriptableRendererFeature) for rendering.
 	/// </summary>
@@ -163,7 +163,7 @@ namespace IV.FormulaTracker
 
 				if (!IsLineValid(ref line)) continue;
 
-				// M3T camera space (Y-down) to Unity camera space (Y-up): flip Y
+				// Native camera space (Y-down) to Unity camera space (Y-up): flip Y
 				Vector3 startCam = new Vector3(line.start_x, -line.start_y, line.start_z);
 				Vector3 endCam = new Vector3(line.end_x, -line.end_y, line.end_z);
 

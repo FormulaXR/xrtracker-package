@@ -8,17 +8,16 @@ using UnityEngine.Rendering;
 namespace IV.FormulaTracker.Editor
 {
 	/// <summary>
-	/// Editor window that captures color + depth from the Scene View camera
+	/// Editor window that captures color and depth from the Scene View camera
 	/// for offline testing without a physical camera.
-	/// Outputs sequences as sequential PNGs + JSON metadata (sequence.json).
+	/// It writes a sequence of PNG images and a JSON metadata file (sequence.json).
 	///
-	/// Color: rendered via cam.Render() (through URP).
-	/// Depth: rendered via CommandBuffer.DrawRenderer with LinearDepth material,
+	/// Color is rendered with the Scene View camera.
+	/// Depth is rendered with a command buffer that draws each renderer with the LinearDepth material,
 	/// which computes linear eye-space depth from vertex positions.
-	/// This bypasses URP's shader selection entirely — works with any render pipeline.
+	/// This bypasses the shader selection of the active render pipeline, so it works with any render pipeline.
 	///
-	/// Recording is handled entirely in C++ (SequenceRecorder) via FT_RecordFrame.
-	/// No SequenceWriter dependency — PNG encoding happens in C++ via cv::imencode.
+	/// The native plugin records the frames and encodes the PNG files.
 	/// </summary>
 	public class SceneViewRecorder : EditorWindow
 	{
@@ -36,6 +35,7 @@ namespace IV.FormulaTracker.Editor
 		private int _targetFps = 30;
 		private float _depthScale = 0.001f;
 		private bool _captureDepth;
+		private Transform _truthBody;
 
 		// Viewpoint
 		private TrackedBody _trackedBody;
@@ -45,6 +45,9 @@ namespace IV.FormulaTracker.Editor
 		private float _nextCaptureTime;
 		private int _frameCount;
 		private double _startTime;
+		private string _activeOutputDirectory;
+		private string _lastError;
+		private SceneViewTruthWriter _truthWriter;
 
 		// Resources
 		private Material _depthMaterial;
@@ -64,8 +67,7 @@ namespace IV.FormulaTracker.Editor
 			var shader = Shader.Find("Hidden/FormulaTracker/LinearDepth");
 			if (shader == null)
 			{
-				shader = AssetDatabase.LoadAssetAtPath<Shader>(
-					"Packages/com.formulaxr.tracker/Runtime/Shaders/LinearDepth.shader");
+				shader = Resources.Load<Shader>("Shaders/LinearDepth");
 			}
 
 			if (shader != null)
@@ -121,11 +123,16 @@ namespace IV.FormulaTracker.Editor
 				_height = EditorGUILayout.IntField("Height", _height);
 				_targetFps = EditorGUILayout.IntSlider("Target FPS", _targetFps, 1, 60);
 				_captureDepth = EditorGUILayout.Toggle("Capture Depth", _captureDepth);
+				_truthBody = (Transform)EditorGUILayout.ObjectField(
+					new GUIContent("Truth Body (Optional)",
+						"When set, the recorder writes the true pose of this object for every frame to a truth.jsonl file next to the recording. " +
+						"The file lets you check tracking accuracy later. Leave it empty to record without a truth file."),
+					_truthBody, typeof(Transform), true);
 
 				if (_captureDepth)
 				{
 					EditorGUI.indentLevel++;
-					_depthScale = EditorGUILayout.FloatField("Depth Scale (m/unit)", _depthScale);
+					_depthScale = EditorGUILayout.FloatField("Depth Scale (meters per unit)", _depthScale);
 					EditorGUI.indentLevel--;
 				}
 			}
@@ -153,7 +160,7 @@ namespace IV.FormulaTracker.Editor
 				if (viewpoint == null)
 				{
 					EditorGUILayout.HelpBox(
-						"No viewpoint assigned on this TrackedBody.",
+						"This TrackedBody has no viewpoint assigned.",
 						MessageType.Info);
 				}
 			}
@@ -191,26 +198,32 @@ namespace IV.FormulaTracker.Editor
 				EditorGUILayout.LabelField("Elapsed", $"{elapsed:F1}s");
 				EditorGUILayout.LabelField("Effective FPS",
 					elapsed > 0 ? $"{_frameCount / elapsed:F1}" : "0");
+				EditorGUILayout.LabelField("Output", _activeOutputDirectory ?? "");
 				Repaint();
 			}
 			else
 			{
 				EditorGUILayout.LabelField("State", "Idle");
+				if (!string.IsNullOrEmpty(_activeOutputDirectory))
+					EditorGUILayout.LabelField("Last Output", _activeOutputDirectory);
 			}
+
+			if (!string.IsNullOrEmpty(_lastError))
+				EditorGUILayout.HelpBox(_lastError, MessageType.Error);
 
 			// Warnings
 			if (SceneView.lastActiveSceneView == null)
 			{
 				EditorGUILayout.Space(4);
-				EditorGUILayout.HelpBox("No active Scene View found. Open a Scene View to record.", MessageType.Warning);
+				EditorGUILayout.HelpBox("The recorder found no active Scene View. Open a Scene View to record.", MessageType.Warning);
 			}
 
 			if (_captureDepth && EnsureDepthMaterial() == null)
 			{
 				EditorGUILayout.Space(4);
 				EditorGUILayout.HelpBox(
-					"LinearDepth shader not found. Depth capture will be disabled.\n" +
-					"Ensure 'Hidden/FormulaTracker/LinearDepth' shader is included in the project.",
+					"The LinearDepth shader was not found, so depth capture is disabled.\n" +
+					"The 'Hidden/FormulaTracker/LinearDepth' shader must be included in the project.",
 					MessageType.Warning);
 			}
 		}
@@ -239,17 +252,32 @@ namespace IV.FormulaTracker.Editor
 		{
 			if (string.IsNullOrEmpty(_outputDirectory))
 			{
-				Debug.LogError("[SceneViewRecorder] Output directory not set");
+				Debug.LogError("[SceneViewRecorder] The output directory is not set.");
 				return;
 			}
 
 			string timestampedDir = System.IO.Path.Combine(_outputDirectory,
 				DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss"));
+			_activeOutputDirectory = timestampedDir;
+			_lastError = null;
 
 			int result = FTBridge.FT_StartRecording(timestampedDir);
 			if (result != FTErrorCode.OK)
 			{
-				Debug.LogError($"[SceneViewRecorder] FT_StartRecording failed: {result}");
+				SetError($"The recording could not start (error {result}).");
+				return;
+			}
+
+			try
+			{
+				_truthWriter = _truthBody != null
+					? new SceneViewTruthWriter(timestampedDir)
+					: null;
+			}
+			catch (Exception exception)
+			{
+				FTBridge.FT_StopRecording();
+				SetError($"Could not create truth.jsonl ({exception.Message}).");
 				return;
 			}
 
@@ -262,7 +290,7 @@ namespace IV.FormulaTracker.Editor
 
 			EditorApplication.update += OnEditorUpdate;
 
-			Debug.Log($"[SceneViewRecorder] Recording started: {timestampedDir}");
+			Debug.Log($"[SceneViewRecorder] Recording started in {timestampedDir}.");
 		}
 
 		private void StopRecording()
@@ -272,9 +300,41 @@ namespace IV.FormulaTracker.Editor
 			EditorApplication.update -= OnEditorUpdate;
 
 			_isRecording = false;
-			int frameCount = FTBridge.FT_StopRecording();
+			int frameCount = -1;
+			Exception stopException = null;
+			try
+			{
+				frameCount = FTBridge.FT_StopRecording();
+			}
+			catch (Exception exception)
+			{
+				stopException = exception;
+			}
 
-			Debug.Log($"[SceneViewRecorder] Recording stopped. {frameCount} frames saved.");
+			try
+			{
+				_truthWriter?.Dispose();
+			}
+			catch (Exception exception)
+			{
+				stopException ??= exception;
+			}
+			finally
+			{
+				_truthWriter = null;
+			}
+
+			if (stopException != null)
+			{
+				string message = $"Could not stop the recording cleanly ({stopException.Message}).";
+				if (string.IsNullOrEmpty(_lastError))
+					SetError(message);
+				else
+					Debug.LogError($"[SceneViewRecorder] {message}");
+				return;
+			}
+
+			Debug.Log($"[SceneViewRecorder] Recording stopped. {frameCount} frames saved to {_activeOutputDirectory}.");
 		}
 
 
@@ -303,6 +363,24 @@ namespace IV.FormulaTracker.Editor
 			float fPixel = (_height / 2f) / Mathf.Tan(vfov / 2f);
 			float fuNorm = fPixel / _width;
 			float fvNorm = fPixel / _height;
+
+			// Snapshot all transforms before rendering. The same immutable context
+			// is used for native submission and optional truth output.
+			long timestampNs = (long)((EditorApplication.timeSinceStartup - _startTime) * 1_000_000_000.0);
+			Matrix4x4 worldFromCameraUnity = cam.transform.localToWorldMatrix;
+			Matrix4x4? worldFromBodyUnity = _truthBody != null
+				? (Matrix4x4?)_truthBody.localToWorldMatrix
+				: null;
+			var frameSnapshot = SceneViewFrameSnapshot.Create(
+				timestampNs,
+				_width,
+				_height,
+				fuNorm,
+				fvNorm,
+				0.5f,
+				0.5f,
+				worldFromCameraUnity,
+				worldFromBodyUnity);
 
 			var originalRT = cam.targetTexture;
 
@@ -361,35 +439,81 @@ namespace IV.FormulaTracker.Editor
 					}
 				}
 
-				depthHandle = GCHandle.Alloc(_depthBuffer, GCHandleType.Pinned);
-				depthPtr = depthHandle.AddrOfPinnedObject();
-				depthW = _width;
-				depthH = _height;
-				depthFu = fuNorm;
-				depthFv = fvNorm;
-				depthPpu = 0.5f;
-				depthPpv = 0.5f;
 			}
 
-			// Pin color data and call FT_RecordFrame
-			GCHandle colorHandle = GCHandle.Alloc(_colorBuffer, GCHandleType.Pinned);
+			GCHandle colorHandle = default;
+			int nativeResult;
 			try
 			{
-				FTBridge.FT_RecordFrame(
+				_truthWriter?.BeginFrame(_frameCount, frameSnapshot);
+
+				if (wantDepth)
+				{
+					depthHandle = GCHandle.Alloc(_depthBuffer, GCHandleType.Pinned);
+					depthPtr = depthHandle.AddrOfPinnedObject();
+					depthW = _width;
+					depthH = _height;
+					depthFu = fuNorm;
+					depthFv = fvNorm;
+					depthPpu = 0.5f;
+					depthPpv = 0.5f;
+				}
+
+				// Pin color data and atomically submit it with the snapshotted pose.
+				colorHandle = GCHandle.Alloc(_colorBuffer, GCHandleType.Pinned);
+				var worldFromCameraNative = frameSnapshot.WorldFromCameraNative;
+				nativeResult = FTBridge.FT_RecordFrameWithCameraPose(
 					colorHandle.AddrOfPinnedObject(), _width, _height,
 					fuNorm, fvNorm, 0.5f, 0.5f,
 					depthPtr, depthW, depthH,
 					depthFu, depthFv, depthPpu, depthPpv,
-					_depthScale);
+					_depthScale, frameSnapshot.TimestampNs,
+					ref worldFromCameraNative);
+			}
+			catch (Exception exception)
+			{
+				string rollbackError = null;
+				try
+				{
+					_truthWriter?.RollbackFrame();
+				}
+				catch (Exception rollbackException)
+				{
+					rollbackError = $" The truth rollback also failed ({rollbackException.Message}).";
+				}
+
+				SetError($"Could not record frame {_frameCount} ({exception.Message}).{rollbackError}");
+				StopRecording();
+				return;
 			}
 			finally
 			{
-				colorHandle.Free();
+				if (colorHandle.IsAllocated)
+					colorHandle.Free();
 				if (depthHandle.IsAllocated)
 					depthHandle.Free();
 			}
 
-			_frameCount++;
+			bool committed = SceneViewRecordingUtilities.TryFinalizeSubmittedFrame(
+				nativeResult,
+				_frameCount,
+				_truthWriter,
+				out int nextFrameCount,
+				out string error);
+			_frameCount = nextFrameCount;
+
+			if (!committed)
+			{
+				SetError(error);
+				StopRecording();
+			}
+		}
+
+		private void SetError(string message)
+		{
+			_lastError = message;
+			Debug.LogError($"[SceneViewRecorder] {message}");
+			Repaint();
 		}
 
 		/// <summary>

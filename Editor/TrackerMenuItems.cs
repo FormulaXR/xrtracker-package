@@ -35,14 +35,6 @@ namespace IV.FormulaTracker.Editor
 			if (xrOrigin != null)
 			{
 				xrOrigin.RequestedTrackingOriginMode = XROrigin.TrackingOriginMode.Device;
-
-				// AR managers for pose fusion anchor placement (no prefabs — invisible)
-				if (xrOrigin.GetComponent<ARAnchorManager>() == null)
-					xrOrigin.gameObject.AddComponent<ARAnchorManager>();
-				if (xrOrigin.GetComponent<ARPlaneManager>() == null)
-					xrOrigin.gameObject.AddComponent<ARPlaneManager>();
-				if (xrOrigin.GetComponent<ARRaycastManager>() == null)
-					xrOrigin.gameObject.AddComponent<ARRaycastManager>();
 			}
 
 			var mainCam = xrOrigin != null ? xrOrigin.Camera : null;

@@ -3,16 +3,17 @@ using UnityEngine;
 namespace IV.FormulaTracker
 {
 	/// <summary>
-	/// Displays a license watermark overlay for Free, Trial, and Developer tiers.
+	/// Displays the license watermark for the Developer tier and for any expired license.
+	/// A license of a retired tier shows a short notice that the tier is no longer supported.
 	/// Uses OnGUI for render-pipeline independence (Built-in, URP, HDRP all work).
-	/// Sends a heartbeat to native each frame — removing this component degrades tracking.
+	/// Sends a heartbeat to the native plugin each frame, and tracking degrades when this component is removed.
 	/// </summary>
 	[AddComponentMenu("")] // Hidden from Add Component menu
 	[DefaultExecutionOrder(1000)]
 	public class LicenseWatermark : MonoBehaviour
 	{
-		// Free/Trial: repositions every 3s, always visible (legacy, kept for future reuse)
-		// Developer: fixed bottom-left corner, always visible, no fade
+		// Developer: fixed bottom-left corner, always visible.
+		// Any other watermark moves to a random position every few seconds.
 		private const float PADDING = 16f;
 		private const float MARGIN = 20f;
 
@@ -23,13 +24,6 @@ namespace IV.FormulaTracker
 		private bool _frozen;
 		private bool _expired;
 		private LicenseTier _tier;
-
-		// Developer tier fade
-		private float _fadeAlpha;
-		private float _fadeTimer;
-		private const float DEV_VISIBLE_DURATION = 2f;
-		private const float DEV_HIDDEN_DURATION = 8f;
-		private const float DEV_FADE_SPEED = 3f;
 
 		// Copy Machine ID
 		private GUIStyle _buttonStyle;
@@ -50,12 +44,12 @@ namespace IV.FormulaTracker
 			if (manager == null) return;
 
 			_tier = manager.LicenseTier;
+#pragma warning disable CS0618 // The frozen state belongs to the retired tiers, which the plugin can still report.
 			_frozen = manager.IsLicenseFrozen;
+#pragma warning restore CS0618
 			_expired = manager.LicenseStatus == LicenseStatus.Expired;
 
-
-			// Developer: fixed corner, no reposition, no fade
-			// Free/Trial (legacy): repositions every 3s
+			// Developer: fixed corner, no reposition.
 			if (_tier != LicenseTier.Developer)
 			{
 				_repositionInterval = 3f;
@@ -65,8 +59,6 @@ namespace IV.FormulaTracker
 					_nextRepositionTime = Time.unscaledTime + _repositionInterval;
 				}
 			}
-
-			_fadeAlpha = 1f;
 		}
 
 		private void OnGUI()
@@ -77,9 +69,9 @@ namespace IV.FormulaTracker
 			var manager = XRTrackerManager.Instance;
 			if (manager == null) return;
 
-			// Only show for Free, Trial, Developer, or any expired license
-			if (!_expired &&
-			    _tier != LicenseTier.Free && _tier != LicenseTier.Trial && _tier != LicenseTier.Developer)
+			// Only show for the Developer tier, a retired tier, or any expired license
+			bool retired = IsRetiredTier(_tier);
+			if (!_expired && !retired && _tier != LicenseTier.Developer)
 				return;
 
 			string text;
@@ -88,35 +80,25 @@ namespace IV.FormulaTracker
 
 			if (_expired)
 			{
-				string tierName = _tier == LicenseTier.Trial ? "Trial" :
-				                  _tier == LicenseTier.Developer ? "Developer" :
-				                  _tier == LicenseTier.Commercial ? "Commercial" : "License";
-				text = $"XRTracker \u2014 {tierName} License Expired";
+				text = $"XRTracker — {GetLicenseName(_tier)} Expired";
 				textColor = new Color(1f, 0.3f, 0.3f, 0.9f);
 				fontSize = 18;
 			}
-			else if (_frozen)
+			else if (retired && _frozen)
 			{
-				text = "XRTracker \u2014 Free License\nTracking paused \u2014 restart app/Unity to reset\nContact support@formulaxr.com for a 15-day unlimited trial";
+				text = "XRTracker — Tracking paused\nThis license tier is no longer supported. Restart the app to reset.";
 				textColor = new Color(1f, 0.3f, 0.3f, 0.9f);
 				fontSize = 18;
 			}
-			else if (_tier == LicenseTier.Free)
+			else if (retired)
 			{
-				float remaining = manager.FreeSecondsRemaining;
-				text = FormatTimeText("Free License", remaining);
-				textColor = new Color(1f, 1f, 1f, 0.85f);
-				fontSize = 18;
-			}
-			else if (_tier == LicenseTier.Trial)
-			{
-				text = "XRTracker \u2014 Trial License";
+				text = "XRTracker — This license tier is no longer supported";
 				textColor = new Color(1f, 1f, 1f, 0.7f);
 				fontSize = 16;
 			}
 			else // Developer — persistent fixed-corner watermark
 			{
-				text = "XRTracker \u2014 Developer License";
+				text = "XRTracker — Developer License";
 				textColor = new Color(1f, 1f, 1f, 0.55f);
 				fontSize = 14;
 			}
@@ -166,13 +148,21 @@ namespace IV.FormulaTracker
 			DrawMachineIdButton();
 		}
 
-		private static string FormatTimeText(string tierName, float remaining)
+		private static bool IsRetiredTier(LicenseTier tier)
 		{
-			int mins = Mathf.FloorToInt(remaining / 60f);
-			int secs = Mathf.FloorToInt(remaining % 60f);
-			return mins > 0
-				? $"XRTracker \u2014 {tierName} \u2014 {mins}:{secs:D2} remaining"
-				: $"XRTracker \u2014 {tierName} \u2014 {secs}s remaining";
+#pragma warning disable CS0618 // The Free and Trial tiers are retired, but a license file can still name them.
+			return tier == LicenseTier.Free || tier == LicenseTier.Trial;
+#pragma warning restore CS0618
+		}
+
+		private static string GetLicenseName(LicenseTier tier)
+		{
+			switch (tier)
+			{
+				case LicenseTier.Developer: return "Developer License";
+				case LicenseTier.Commercial: return "Commercial License";
+				default: return "License";
+			}
 		}
 
 		private void DrawMachineIdButton()
@@ -200,7 +190,7 @@ namespace IV.FormulaTracker
 				string machineId = SystemInfo.deviceUniqueIdentifier;
 				GUIUtility.systemCopyBuffer = machineId;
 				_copiedMessageTimer = COPIED_MESSAGE_DURATION;
-				Debug.Log($"[XRTracker] Machine ID copied to clipboard: {machineId}");
+				Debug.Log($"[XRTracker] Machine ID copied to the clipboard ({machineId}).");
 			}
 		}
 

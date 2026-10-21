@@ -9,7 +9,7 @@ namespace IV.FormulaTracker
 	/// Shared utility methods for mesh processing and tracking calculations.
 	/// Used by TrackedBody, TrackedObject, and SilhouetteModelGeneratorCore.
 	/// </summary>
-	public static class TrackedBodyUtils
+	internal static class TrackedBodyUtils
 	{
 		/// <summary>
 		/// Computes the local transform from child to ancestor using only local transforms.
@@ -154,6 +154,89 @@ namespace IV.FormulaTracker
 			}
 
 			return combinedBounds;
+		}
+
+		/// <summary>
+		/// Remembers the result of <see cref="ComputeLocalBounds"/> for one body, so that a caller that asks
+		/// every frame reads the stored bounds instead of copying every vertex of every mesh again.
+		/// </summary>
+		/// <remarks>
+		/// The stored value is reused only while the same mesh filters hold the same meshes, in the same
+		/// order, as when it was computed, and until <see cref="Invalidate"/> is called. A change to the
+		/// vertices of a mesh that stays assigned, or to the local transform of a mesh filter, is not seen,
+		/// so the owner invalidates the cache when it changes its geometry. One cache serves one root transform.
+		/// </remarks>
+		internal sealed class LocalBoundsCache
+		{
+			private MeshFilter[] _filters = System.Array.Empty<MeshFilter>();
+			private Mesh[] _meshes = System.Array.Empty<Mesh>();
+			private Bounds _bounds;
+			private bool _hasValue;
+
+			/// <summary>
+			/// Drops the stored bounds, so that the next request computes them again.
+			/// </summary>
+			internal void Invalidate()
+			{
+				_hasValue = false;
+			}
+
+			/// <summary>
+			/// Returns the same bounds <see cref="ComputeLocalBounds"/> returns for these arguments, computing
+			/// them only when nothing is stored or the stored value was computed for other meshes.
+			/// </summary>
+			internal Bounds Get(IList<MeshFilter> meshFilters, Transform rootTransform)
+			{
+				if (_hasValue && Matches(meshFilters))
+					return _bounds;
+
+				_bounds = ComputeLocalBounds(meshFilters, rootTransform);
+				Remember(meshFilters);
+				_hasValue = true;
+				return _bounds;
+			}
+
+			private bool Matches(IList<MeshFilter> meshFilters)
+			{
+				int count = meshFilters == null ? 0 : meshFilters.Count;
+				if (count != _filters.Length)
+					return false;
+
+				for (int i = 0; i < count; ++i)
+				{
+					MeshFilter filter = meshFilters[i];
+					if (!ReferenceEquals(filter, _filters[i]) || !ReferenceEquals(MeshOf(filter), _meshes[i]))
+						return false;
+				}
+
+				return true;
+			}
+
+			private void Remember(IList<MeshFilter> meshFilters)
+			{
+				int count = meshFilters == null ? 0 : meshFilters.Count;
+				if (count != _filters.Length)
+				{
+					_filters = new MeshFilter[count];
+					_meshes = new Mesh[count];
+				}
+
+				for (int i = 0; i < count; ++i)
+				{
+					_filters[i] = meshFilters[i];
+					_meshes[i] = MeshOf(_filters[i]);
+				}
+			}
+
+			// A destroyed filter or mesh reads as null, which is also how ComputeLocalBounds skips it.
+			private static Mesh MeshOf(MeshFilter filter)
+			{
+				if (filter == null)
+					return null;
+
+				Mesh mesh = filter.sharedMesh;
+				return mesh == null ? null : mesh;
+			}
 		}
 
 		/// <summary>

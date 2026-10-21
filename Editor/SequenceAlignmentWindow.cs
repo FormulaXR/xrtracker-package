@@ -273,9 +273,10 @@ namespace IV.FormulaTracker.Editor
 
 			Handles.BeginGUI();
 
-			var pixelRect = sceneView.camera.pixelRect;
-			Rect viewRect = new Rect(0, 0, pixelRect.width, pixelRect.height);
-			Rect imageRect = FitRect(viewRect, (float)_imageWidth / _imageHeight);
+			Camera camera = sceneView.camera;
+			var cameraPixelSize = new Vector2(camera.pixelWidth, camera.pixelHeight);
+			Rect imageRect = ComputeImageRect(cameraPixelSize, EditorGUIUtility.pixelsPerPoint,
+				(float)_imageWidth / _imageHeight);
 
 			Color prev = GUI.color;
 			GUI.color = new Color(1f, 1f, 1f, _overlayOpacity);
@@ -283,6 +284,23 @@ namespace IV.FormulaTracker.Editor
 			GUI.color = prev;
 
 			Handles.EndGUI();
+		}
+
+		/// <summary>
+		/// Computes the rect the recorded camera image covers in the GUI space of the Scene view.
+		/// </summary>
+		/// <param name="cameraPixelSize">Size of the Scene view camera in physical pixels.</param>
+		/// <param name="pixelsPerPoint">Physical pixels per GUI point (1.5 at a display scaling of 150 percent).</param>
+		/// <param name="imageAspect">Width divided by height of the recorded image.</param>
+		/// <returns>
+		/// The largest centred rect of that aspect that fits the camera view, in GUI points. During
+		/// <c>duringSceneGui</c> the point (0, 0) is the top left corner of the area the camera renders to
+		/// and the drawing is in points, so the camera size in pixels has to be divided by the pixels per point.
+		/// </returns>
+		internal static Rect ComputeImageRect(Vector2 cameraPixelSize, float pixelsPerPoint, float imageAspect)
+		{
+			var viewRect = new Rect(0f, 0f, cameraPixelSize.x / pixelsPerPoint, cameraPixelSize.y / pixelsPerPoint);
+			return FitRect(viewRect, imageAspect);
 		}
 
 		/// <summary>

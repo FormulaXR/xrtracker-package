@@ -5,11 +5,11 @@ using UnityEngine.Serialization;
 namespace IV.FormulaTracker
 {
 	/// <summary>
-	/// ScriptableObject that stores pre-generated tracking models (silhouette + depth).
+	/// ScriptableObject that stores pre-generated tracking models (silhouette and depth).
 	/// This allows models to be embedded in Unity builds without requiring
 	/// file system access at runtime.
 	/// </summary>
-	[CreateAssetMenu(fileName = "TrackingModel", menuName = "FormulaTracker/Tracking Model Asset")]
+	[CreateAssetMenu(fileName = "TrackingModel", menuName = "XRTracker/Tracking Model Asset")]
 	[PreferBinarySerialization]
 	public class TrackingModelAsset : ScriptableObject
 	{
@@ -75,7 +75,7 @@ namespace IV.FormulaTracker
 
 		#region Backward Compatibility (Legacy Property Names)
 
-		// These properties maintain backward compatibility with code that used SilhouetteModelAsset
+		// These properties keep code that uses the earlier property names working
 
 		/// <summary>
 		/// The raw silhouette model data bytes (legacy: ModelData)
@@ -300,7 +300,7 @@ namespace IV.FormulaTracker
 		#region Clear All
 
 		/// <summary>
-		/// Clear all model data (silhouette + depth)
+		/// Clear all model data (silhouette and depth)
 		/// </summary>
 		public void ClearData()
 		{

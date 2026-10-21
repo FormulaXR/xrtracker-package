@@ -10,7 +10,7 @@ namespace IV.FormulaTracker
 	/// Combines multiple meshes into a single vertex/triangle buffer for tracking.
 	/// Handles coordinate conversion and transform application.
 	/// </summary>
-	public struct CombinedMeshData : IDisposable
+	internal struct CombinedMeshData : IDisposable
 	{
 		public NativeArray<float> Vertices;
 		public NativeArray<float> Normals;
@@ -52,7 +52,7 @@ namespace IV.FormulaTracker
 		}
 	}
 
-	public static class MeshCombiner
+	internal static class MeshCombiner
 	{
 		/// <summary>
 		/// Combines multiple MeshFilters into a single mesh data structure.

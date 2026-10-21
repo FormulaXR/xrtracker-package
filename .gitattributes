@@ -4,5 +4,9 @@
 *.a filter=lfs diff=lfs merge=lfs -text
 *.dylib filter=lfs diff=lfs merge=lfs -text
 
-# iOS framework binaries
-Plugins/iOS/opencv2.framework/opencv2 filter=lfs diff=lfs merge=lfs -text
+# macOS bundle. Never touch line endings anywhere inside it: CodeResources
+# stores hashes of the other files, so CRLF conversion invalidates the signature.
+Plugins/macOS/formula_tracker.bundle/** -text
+
+# The bundle binary has no file extension, so the rules above do not catch it.
+Plugins/macOS/formula_tracker.bundle/Contents/MacOS/formula_tracker filter=lfs diff=lfs merge=lfs -text

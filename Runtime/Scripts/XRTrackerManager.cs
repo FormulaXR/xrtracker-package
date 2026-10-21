@@ -1,6 +1,7 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -65,8 +66,352 @@ namespace IV.FormulaTracker
 
 	#endregion
 
+	/// <summary>
+	/// Drains a queued injected step before its session can release or replace the
+	/// native tracker. The completion worker only writes its result, so shutdown
+	/// owns the semaphore release once it has observed completion.
+	/// </summary>
+	internal static class InjectedTrackingShutdown
+	{
+		internal static async Task DrainAsync(
+			Func<bool> ownsInjectedStep,
+			Func<bool> trackingStepComplete,
+			Action releaseOwnership)
+		{
+			while (ownsInjectedStep() && !trackingStepComplete())
+				await Task.Yield();
+			if (ownsInjectedStep())
+				releaseOwnership();
+		}
+	}
+
+	internal static class DepthFrameFeed
+	{
+		internal static bool ShouldNotify(int nativeResult)
+		{
+			return FrameWriteGuard.RecordOutOfFrame(nativeResult, "FT_FeedDepthFrame");
+		}
+	}
+
+	/// <summary>
+	/// Decides whether a separately paused recovery phase may dispatch its next
+	/// sequence step synchronously. Ordinary sequence tracking remains on the
+	/// asynchronous path; this mode only keeps a post-step recovery operation on
+	/// the exact thread that just ran native tracking.
+	/// </summary>
+	internal static class RecoverySynchronousStepMode
+	{
+		internal static bool CanEnter(bool initialized, bool trackingReady,
+			bool trackingStepComplete, bool sequenceSource, bool alreadyEnabled)
+		{
+			return initialized && trackingReady && trackingStepComplete &&
+				sequenceSource && !alreadyEnabled;
+		}
+
+		internal static bool IsActiveForSequence(bool enabled, bool sequenceSource) =>
+			enabled && sequenceSource;
+
+		internal static bool MustRestoreAfterCurrentDispatch(bool enabled,
+			bool trackingReady) => enabled && !trackingReady;
+	}
+
+	internal readonly struct CompletedFrameClockSample
+	{
+		internal CompletedFrameClockSample(long deltaNs, float deltaSeconds,
+			string source, bool deterministic)
+		{
+			DeltaNs = deltaNs;
+			DeltaSeconds = deltaSeconds;
+			Source = source;
+			Deterministic = deterministic;
+		}
+
+		internal long DeltaNs { get; }
+		internal float DeltaSeconds { get; }
+		internal string Source { get; }
+		internal bool Deterministic { get; }
+	}
+
+	/// <summary>
+	/// Latches one lifecycle delta per completed native step. Recorded playback is
+	/// driven only by ordered source timestamps; live capture retains the elapsed
+	/// value supplied by the render loop, sampled once at completion.
+	/// </summary>
+	internal sealed class CompletedFrameClock
+	{
+		internal const string RecordedTimestampSource = "recorded_timestamp";
+		internal const string SeekResetSource = "seek_reset";
+		internal const string LiveElapsedSource = "live_elapsed";
+
+		private bool _hasRecordedTimestamp;
+		private long _previousRecordedTimestampNs;
+		private long _observedSeekEpoch;
+
+		internal void Reset(long seekEpoch)
+		{
+			_hasRecordedTimestamp = false;
+			_previousRecordedTimestampNs = 0;
+			_observedSeekEpoch = seekEpoch;
+		}
+
+		internal bool TryLatchRecorded(bool hasTimestamp, long timestampNs,
+			long seekEpoch, out CompletedFrameClockSample sample, out string failure)
+		{
+			sample = default;
+			failure = string.Empty;
+			if (!hasTimestamp)
+			{
+				failure = "recorded timestamp is unavailable";
+				return false;
+			}
+
+			bool seekReset = seekEpoch != _observedSeekEpoch;
+			if (seekReset || !_hasRecordedTimestamp)
+			{
+				_observedSeekEpoch = seekEpoch;
+				_previousRecordedTimestampNs = timestampNs;
+				_hasRecordedTimestamp = true;
+				sample = new CompletedFrameClockSample(
+					0,
+					0f,
+					seekReset ? SeekResetSource : RecordedTimestampSource,
+					true);
+				return true;
+			}
+
+			long deltaNs;
+			try
+			{
+				deltaNs = checked(timestampNs - _previousRecordedTimestampNs);
+			}
+			catch (OverflowException)
+			{
+				failure = "recorded timestamp delta overflowed";
+				return false;
+			}
+			if (deltaNs <= 0)
+			{
+				failure = "recorded timestamps are not strictly increasing";
+				return false;
+			}
+
+			_previousRecordedTimestampNs = timestampNs;
+			sample = new CompletedFrameClockSample(
+				deltaNs,
+				(float)(deltaNs / 1_000_000_000.0),
+				RecordedTimestampSource,
+				true);
+			return true;
+		}
+
+		internal bool TryPreviewRecorded(bool hasTimestamp, long timestampNs,
+			long seekEpoch, out CompletedFrameClockSample sample, out string failure,
+			out CompletedFrameClock pending)
+		{
+			pending = new CompletedFrameClock
+			{
+				_hasRecordedTimestamp = _hasRecordedTimestamp,
+				_previousRecordedTimestampNs = _previousRecordedTimestampNs,
+				_observedSeekEpoch = _observedSeekEpoch,
+			};
+			return pending.TryLatchRecorded(
+				hasTimestamp, timestampNs, seekEpoch, out sample, out failure);
+		}
+
+		internal void Commit(CompletedFrameClock pending)
+		{
+			if (pending == null)
+				return;
+			_hasRecordedTimestamp = pending._hasRecordedTimestamp;
+			_previousRecordedTimestampNs = pending._previousRecordedTimestampNs;
+			_observedSeekEpoch = pending._observedSeekEpoch;
+		}
+
+		internal static CompletedFrameClockSample LatchLive(float elapsedSeconds)
+		{
+			float finiteElapsed = float.IsNaN(elapsedSeconds) ||
+				float.IsInfinity(elapsedSeconds) || elapsedSeconds < 0f
+				? 0f
+				: elapsedSeconds;
+			long deltaNs = checked((long)System.Math.Round(
+				(double)finiteElapsed * 1_000_000_000.0,
+				MidpointRounding.AwayFromZero));
+			return new CompletedFrameClockSample(
+				deltaNs, finiteElapsed, LiveElapsedSource, false);
+		}
+
+		internal static bool ShouldUseRecordedClock(
+			bool sequenceSource, bool hasRecordedObservationSource)
+		{
+			return sequenceSource && hasRecordedObservationSource;
+		}
+	}
+
+	internal static class CompletedFramePublicationContract
+	{
+		internal static bool CanPublish(bool stepSucceeded, int registeredBodies,
+			int refreshedBodies)
+		{
+			return stepSucceeded && registeredBodies >= 0 &&
+				refreshedBodies == registeredBodies;
+		}
+	}
+
+	/// <summary>
+	/// Decides when a dispatched sequence frame opens a new playback pass. With the loop on, the plugin reads the frames of the
+	/// range in order and then starts the range again, and a range of one frame reads that frame on every step. In both cases the
+	/// frame the step is dispatched for is not after the frame of the previous step, and the recorded timestamps repeat or go
+	/// back with it. That is the start of a pass, and it is handled like a seek to the start of the range.
+	/// </summary>
+	internal static class SequencePassBoundary
+	{
+		internal static bool OpensNewPass(bool sequenceSource, bool loopOn, int previousFrame, int frame)
+		{
+			return sequenceSource && loopOn && previousFrame >= 0 && frame >= 0 && frame <= previousFrame;
+		}
+	}
+
+	internal static class CompletedFrameRegistrationBoundary
+	{
+		internal static bool UsesRecordedClock(bool sequenceSource,
+			bool hasRecordedObservationSource, int registeredBodyCount)
+		{
+			return registeredBodyCount > 0 &&
+				CompletedFrameClock.ShouldUseRecordedClock(sequenceSource,
+					hasRecordedObservationSource);
+		}
+
+		internal static bool ClearsDormantOrderState(int registeredBefore,
+			int registeredAfter)
+		{
+			return registeredBefore == 1 && registeredAfter == 0;
+		}
+	}
+
+	/// <summary>
+	/// Keeps the recorded AR provider scoped to the feature that consumes its
+	/// observations. Sequence images alone must not make a no-fusion replay
+	/// depend on an optional recording sidecar.
+	/// </summary>
+	internal static class SequenceReplayFusionBindingPolicy
+	{
+		internal static bool ShouldBindRecordedFusion(bool useArPoseFusion)
+		{
+			return useArPoseFusion;
+		}
+	}
+
+	internal static class CompletedFrameContextCommitContract
+	{
+		internal static bool CommitIfValid(bool clockValid, Action commit)
+		{
+			if (!clockValid)
+				return false;
+			commit();
+			return true;
+		}
+	}
+
+	internal readonly struct CompletedFrameStatusToken
+	{
+		internal CompletedFrameStatusToken(bool isValid, string sequenceId,
+			int frameIndex, long timestampNs)
+		{
+			IsValid = isValid;
+			SequenceId = sequenceId ?? string.Empty;
+			FrameIndex = frameIndex;
+			TimestampNs = timestampNs;
+		}
+
+		internal bool IsValid { get; }
+		internal string SequenceId { get; }
+		internal int FrameIndex { get; }
+		internal long TimestampNs { get; }
+	}
+
 	public class XRTrackerManager : MonoBehaviour
 	{
+		/// <summary>
+		/// Immutable snapshot for behavior-neutral per-frame instrumentation.
+		/// It exposes the submitted frame identity without exposing mutable provider state.
+		/// </summary>
+		internal readonly struct TrackingFrameInstrumentationContext
+		{
+			public readonly bool IsValid;
+			public readonly string SequenceId;
+			public readonly int FrameIndex;
+			public readonly long TimestampNs;
+			public readonly string ObservationSource;
+			public readonly string TrackingSpace;
+			public readonly string SessionSpaceIdentity;
+			public readonly int SessionSpaceEpoch;
+			public readonly int CoordinateEpoch;
+			public readonly Matrix4x4 WorldFromCameraUnity;
+			public readonly Matrix4x4 WorldFromTrackingSpaceUnity;
+			public readonly long TrackingStepDeltaNs;
+			public readonly string TrackingStepClockSource;
+			public readonly int RegisteredBodyCount;
+			public readonly int RefreshedBodyCount;
+			public readonly bool DeterministicClockEnabled;
+			internal readonly float TrackingStepDeltaSeconds;
+
+			internal TrackingFrameInstrumentationContext(
+				bool isValid,
+				string sequenceId,
+				int frameIndex,
+				long timestampNs,
+				string observationSource,
+				string trackingSpace,
+				string sessionSpaceIdentity,
+				int sessionSpaceEpoch,
+				int coordinateEpoch,
+				Matrix4x4 worldFromCameraUnity,
+				Matrix4x4 worldFromTrackingSpaceUnity,
+				CompletedFrameClockSample clockSample,
+				int registeredBodyCount,
+				int refreshedBodyCount)
+			{
+				IsValid = isValid;
+				SequenceId = sequenceId ?? string.Empty;
+				FrameIndex = frameIndex;
+				TimestampNs = timestampNs;
+				ObservationSource = observationSource ?? string.Empty;
+				TrackingSpace = trackingSpace ?? string.Empty;
+				SessionSpaceIdentity = sessionSpaceIdentity ?? string.Empty;
+				SessionSpaceEpoch = sessionSpaceEpoch;
+				CoordinateEpoch = coordinateEpoch;
+				WorldFromCameraUnity = worldFromCameraUnity;
+				WorldFromTrackingSpaceUnity = worldFromTrackingSpaceUnity;
+				TrackingStepDeltaNs = clockSample.DeltaNs;
+				TrackingStepClockSource = clockSample.Source ?? string.Empty;
+				RegisteredBodyCount = registeredBodyCount;
+				RefreshedBodyCount = refreshedBodyCount;
+				DeterministicClockEnabled = clockSample.Deterministic;
+				TrackingStepDeltaSeconds = clockSample.DeltaSeconds;
+			}
+
+			// Constructor for a caller that has no explicit coordinate identity to give.
+			// A context built here carries no such identity and therefore cannot
+			// authorize recovery.
+			internal TrackingFrameInstrumentationContext(
+				bool isValid,
+				string sequenceId,
+				int frameIndex,
+				long timestampNs,
+				string observationSource,
+				string trackingSpace,
+				Matrix4x4 worldFromCameraUnity,
+				Matrix4x4 worldFromTrackingSpaceUnity,
+				CompletedFrameClockSample clockSample,
+				int registeredBodyCount,
+				int refreshedBodyCount)
+				: this(isValid, sequenceId, frameIndex, timestampNs,
+					observationSource, trackingSpace, string.Empty, 0, 0,
+					worldFromCameraUnity, worldFromTrackingSpaceUnity, clockSample,
+					registeredBodyCount, refreshedBodyCount)
+			{
+			}
+		}
 		#region Singleton
 
 		private static XRTrackerManager _instance;
@@ -120,10 +465,11 @@ namespace IV.FormulaTracker
 #if HAS_AR_FOUNDATION
 		[Tooltip("Use AR Foundation's world tracking to stabilize pose when tracking quality drops")] [SerializeField]
 		private bool _useARPoseFusion = true;
-
-		[Tooltip("Use AR session anchor to stabilize the tracking reference frame. Requires an ARAnchorManager in the scene. When off, tracking operates in world-origin coordinates (less stable over time).")] [SerializeField]
-		private bool _useAnchor = true;
 #endif
+
+		[Tooltip("When the AR session moves its world, the AR camera jumps farther in one frame than a hand can move a phone (more than 25 centimetres and faster than 5 metres per second, or more than 45 degrees and faster than 900 degrees per second). With this on, every tracked body is carried into the new world, so it keeps its place relative to the camera. With this off, a body can lose the object after such a jump.")]
+		[SerializeField]
+		private bool _followArWorldJumps = true;
 
 		[Tooltip("Optional: drag a .lic TextAsset here to embed the license in the build.")]
 		[SerializeField] private TextAsset _embeddedLicense;
@@ -164,6 +510,12 @@ namespace IV.FormulaTracker
 		/// Use this to apply poses immediately after native tracking (best timing for non-SLAM).
 		/// </summary>
 		public event Action OnAfterTrackingStep;
+
+		/// <summary>Runs after native completion and before Unity acceptance/holding.</summary>
+		internal event Action<TrackingFrameInstrumentationContext> OnRawTrackingStepCompleted;
+
+		/// <summary>Runs after all current Unity lifecycle subscribers processed the frame.</summary>
+		internal event Action<TrackingFrameInstrumentationContext> OnTrackingLifecycleCompleted;
 		
 		/// <summary>
 		/// Called when tracking is paused via PauseTracking().
@@ -204,6 +556,7 @@ namespace IV.FormulaTracker
 		#region Private Fields
 
 		private bool _isInitialized;
+		private int _managerThreadId;
 		private bool _hasExecutedDetection;
 		private int _imageWidth;
 		private int _imageHeight;
@@ -225,7 +578,40 @@ namespace IV.FormulaTracker
 		private Transform _cameraTransform;
 		// Async tracking state
 		private volatile bool _trackingStepComplete = true; // Start true so OnDestroy doesn't wait if never started
+		private volatile int _trackingStepResult;
 		private readonly object _trackingLock = new object();
+		private bool _recoverySynchronousStepMode;
+		private bool _deterministicReplayHold;
+		private bool _deterministicReplayOwnsPlayback;
+		// Serials for the three points a frame passes through. They are separate
+		// counters on purpose: a dispatch that never completes, or a completion
+		// that never publishes, is only visible as a gap between two of them.
+		private long _dispatchSerial;
+		private long _completionSerial;
+		private long _publicationSerial;
+		private int _dispatchedSequenceFrame = -1;
+		private readonly CompletedFrameClock _completedFrameClock = new();
+
+#if HAS_AR_FOUNDATION
+		private readonly FusionFrameContextResolver _fusionFrameContextResolver = new();
+		private readonly IFusionCameraPoseSink _fusionCameraPoseSink = new NativeFusionCameraPoseSink();
+		private LiveFusionFrameObservationSource _liveFusionObservationSource;
+		private IARSpaceProvider _liveFusionObservationProvider;
+		private FusionFrameContext? _submittedFusionFrameContext;
+		private FusionFrameContext? _completedFusionFrameContext;
+		private readonly ArWorldJumpWatch _worldJumpWatch = new();
+		private int _nextLiveFusionFrameIndex;
+		private int _lastRejectedFusionFrameIndex = int.MinValue;
+		private FusionObservationFailure _lastRejectedFusionFailure;
+#endif
+
+		// The plugin turns each colour frame to the screen rotation before tracking and feeds depth frames as they come, so the injected
+		// depth camera is turned about its optical axis to match instead. These hold the rotation of the last colour frame fed, the
+		// rotation the depth camera was last turned to, and the colour camera pose the plugin holds, which the turn is composed with.
+		private bool _injectedDepthCamera;
+		private int _fedScreenRotation;
+		private int _depthCameraRotation = -1;
+		private FTTrackingPose _colorCameraPose = new FTTrackingPose { rot_w = 1f };
 
 		// Async injected mode state
 		private volatile bool _injectedTrackingInProgress;
@@ -235,22 +621,46 @@ namespace IV.FormulaTracker
 
 		// Registered tracked bodies for quality-based state management
 		private readonly List<TrackedBody> _trackedBodies = new List<TrackedBody>();
+		private ReadOnlyCollection<TrackedBody> _trackedBodiesView;
+		private readonly List<TrackedBody> _completedStepRegisteredBodies =
+			new List<TrackedBody>();
 
 		// Semaphore for serializing native access (registration, unregistration, tracking)
 		private readonly SemaphoreSlim _nativeAccessLock = new SemaphoreSlim(1, 1);
 
 		private bool UseInjectedCamera() => _imageSource == ImageSource.Injected;
 
+		// The tracker solves in the AR session's world frame, which is the only tracking space there is.
+		private const string WORLD_TRACKING_SPACE = "World";
+
 		// License state (cached from native)
 		private LicenseTier _licenseTier = LicenseTier.None;
 		private LicenseStatus _licenseStatus = LicenseStatus.NotSet;
-		private bool _licenseFrozen;
 
 		#endregion
 
 		#region Public Properties
 
 		public bool IsInitialized => _isInitialized;
+		internal bool IsManagerThread => _managerThreadId != 0 &&
+			Thread.CurrentThread.ManagedThreadId == _managerThreadId;
+
+		/// <summary>
+		/// True when sequence playback has a recorded fusion observation source bound.
+		/// It does not affect tracking, fusion, or pose acceptance.
+		/// </summary>
+		internal bool HasRecordedFusionObservationSource
+		{
+			get
+			{
+#if HAS_AR_FOUNDATION
+				return _imageSource == ImageSource.Sequence &&
+				       Recording.SequenceARPlaybackBinder.IsBound;
+#else
+				return false;
+#endif
+			}
+		}
 		public bool IsTrackingReady => _trackingReady;
 
 		public ImageSource CurrentImageSource
@@ -336,7 +746,10 @@ namespace IV.FormulaTracker
 			{
 				_edgeRenderResolution = Mathf.Clamp(value, 256, 2048);
 				if (_isInitialized)
+				{
+					WaitForTrackingStepToReturn();
 					FTBridge.FT_SetEdgeRenderResolution(_edgeRenderResolution);
+				}
 			}
 		}
 
@@ -360,8 +773,35 @@ namespace IV.FormulaTracker
 
 		/// <summary>
 		/// All registered TrackedBodies. Use this to iterate over tracked objects.
+		/// The collection is a read-only view that follows the registrations, so it can be kept and read again, and it cannot be cast back to the list behind it.
 		/// </summary>
-		public IReadOnlyList<TrackedBody> TrackedBodies => _trackedBodies;
+		public IReadOnlyList<TrackedBody> TrackedBodies => _trackedBodiesView ??= new ReadOnlyCollection<TrackedBody>(_trackedBodies);
+		internal IReadOnlyList<TrackedBody> CompletedStepRegisteredBodies =>
+			_completedStepRegisteredBodies;
+
+#if HAS_AR_FOUNDATION
+		internal bool TryGetSubmittedFusionFrameContext(out FusionFrameContext context)
+		{
+			if (_submittedFusionFrameContext.HasValue)
+			{
+				context = _submittedFusionFrameContext.Value;
+				return true;
+			}
+			context = default;
+			return false;
+		}
+
+		internal bool TryGetCompletedFusionFrameContext(out FusionFrameContext context)
+		{
+			if (_completedFusionFrameContext.HasValue)
+			{
+				context = _completedFusionFrameContext.Value;
+				return true;
+			}
+			context = default;
+			return false;
+		}
+#endif
 		
 		public Texture CurrentTexture { get; private set; }
 
@@ -379,29 +819,85 @@ namespace IV.FormulaTracker
 		/// When enabled, uses AR world tracking to stabilize pose when tracking quality drops.
 		/// </summary>
 #if HAS_AR_FOUNDATION
+		/// <summary>
+		/// Whether fusion is in force. The serialized choice only counts for a camera source that provides
+		/// a camera pose, which is an AR camera source or a sequence with recorded camera poses. For any
+		/// other source it reads false whatever is serialized.
+		/// </summary>
 		public bool UseARPoseFusion
 		{
-			get => _useARPoseFusion;
+			get => _useARPoseFusion && FusionSupportedBySource();
 			set => _useARPoseFusion = value;
 		}
 
-		public bool UseAnchor
+		private string _fusionVerdictDirectory;
+		private PoseFusionSourcePolicy.Verdict _fusionVerdict;
+		private bool _fusionIgnoredLogged;
+
+		/// <summary>
+		/// False when the selected camera source cannot carry fusion. Logs once that the serialized choice
+		/// is ignored, and why.
+		/// </summary>
+		private bool FusionSupportedBySource()
 		{
-			get => _useAnchor;
-			set => _useAnchor = value;
+			PoseFusionSourcePolicy.Verdict verdict = CurrentFusionVerdict();
+			if (!PoseFusionSourcePolicy.Discards(verdict))
+				return true;
+
+			if (!_fusionIgnoredLogged && _useARPoseFusion)
+			{
+				_fusionIgnoredLogged = true;
+				Debug.Log("[XRTracker] Pose fusion is ignored because " +
+				          PoseFusionSourcePolicy.Reason(verdict, _imageSource) + ".");
+			}
+			return false;
+		}
+
+		private PoseFusionSourcePolicy.Verdict CurrentFusionVerdict()
+		{
+			if (_imageSource != ImageSource.Sequence)
+				return PoseFusionSourcePolicy.Evaluate(_imageSource, null);
+
+			string directory = string.IsNullOrEmpty(_resolvedSequenceDirectory)
+				? _sequenceDirectory
+				: _resolvedSequenceDirectory;
+			if (_fusionVerdictDirectory != directory ||
+			    _fusionVerdict == PoseFusionSourcePolicy.Verdict.SequenceNotYetKnown)
+			{
+				_fusionVerdict = PoseFusionSourcePolicy.Evaluate(ImageSource.Sequence, directory);
+				_fusionVerdictDirectory = directory;
+			}
+			return _fusionVerdict;
 		}
 #else
 		public bool UseARPoseFusion { get; set; } = false;
-		public bool UseAnchor { get; set; } = false;
 #endif
 
+		/// <summary>
+		/// Whether every tracked body is carried into the new world when the AR session moves its world. The AR camera then jumps farther in one
+		/// step than a hand can move a phone, which is more than 25 centimetres and faster than 5 metres per second, or more than 45 degrees and
+		/// faster than 900 degrees per second. With this on, each body keeps its place relative to the camera across the jump. With this off, the
+		/// bodies stay at the poses they held in the old world, and a body can lose the object. It is on by default, it acts only under AR pose
+		/// fusion, and the tracker reads it on every step, so a change applies at once. The watch for the jump runs on every step whatever this is
+		/// set to, so turning it on during a session never reads the camera pose from before it was turned on as a jump. A value that a run has
+		/// set for the AR world carry wins over it.
+		/// </summary>
+		public bool FollowArWorldJumps
+		{
+			get => _followArWorldJumps;
+			set => _followArWorldJumps = value;
+		}
+
+		/// <summary>
+		/// The camera the tracker follows and whose projection it sets. Setting null clears it together with its transform.
+		/// </summary>
 		public Camera MainCamera
 		{
 			get => _mainCamera;
 			set
 			{
 				_mainCamera = value;
-				_cameraTransform = _mainCamera.transform;
+				_cameraTransform = _mainCamera != null ? _mainCamera.transform : null;
 			}
 		}
 
@@ -411,12 +907,12 @@ namespace IV.FormulaTracker
 		/// <summary>Current license validation status.</summary>
 		public LicenseStatus LicenseStatus => _licenseStatus;
 
-		/// <summary>True if Free tier 60s limit has been reached. Deprecated — Free tier no longer active.</summary>
-		[System.Obsolete("Free tier deprecated. IsLicenseFrozen is no longer relevant.")]
+		/// <summary>True if the free tier limit of 60 seconds has been reached. The free tier no longer exists, so this is obsolete.</summary>
+		[System.Obsolete("The free tier no longer exists, so IsLicenseFrozen has no meaning. Read LicenseStatus and LicenseTier to see whether the license in use is valid.")]
 		public bool IsLicenseFrozen => FTBridge.FT_IsLicenseFrozen();
 
-		/// <summary>Seconds remaining for Free tier (60s). Deprecated — Free tier no longer active.</summary>
-		[System.Obsolete("Free tier deprecated. FreeSecondsRemaining is no longer relevant.")]
+		/// <summary>Seconds remaining of the free tier limit of 60 seconds. The free tier no longer exists, so this is obsolete.</summary>
+		[System.Obsolete("The free tier no longer exists, so FreeSecondsRemaining has no meaning. Read LicenseStatus and LicenseTier to see whether the license in use is valid.")]
 		public float FreeSecondsRemaining => FTBridge.FT_GetFreeSecondsRemaining();
 
 		/// <summary>Machine ID used for Commercial license node-locking.</summary>
@@ -463,7 +959,6 @@ namespace IV.FormulaTracker
 			int result = FTBridge.FT_SetLicenseData(licenseJson, licenseJson.Length, machineId);
 			_licenseStatus = (LicenseStatus)result;
 			_licenseTier = (LicenseTier)FTBridge.FT_GetLicenseTier();
-			_licenseFrozen = FTBridge.FT_IsLicenseFrozen();
 
 			if (_licenseStatus == LicenseStatus.Valid)
 			{
@@ -495,21 +990,20 @@ namespace IV.FormulaTracker
 				return LicenseStatus.FormatError;
 
 			string machineId = SystemInfo.deviceUniqueIdentifier;
+			WaitForTrackingStepToReturn();
 			int result = FTBridge.FT_SetLicenseData(licenseJson, licenseJson.Length, machineId);
 			_licenseStatus = (LicenseStatus)result;
 			_licenseTier = (LicenseTier)FTBridge.FT_GetLicenseTier();
-			_licenseFrozen = FTBridge.FT_IsLicenseFrozen();
 			return _licenseStatus;
 		}
 
 		/// <summary>
-		/// Refresh cached license state from native side. Call if you need up-to-date frozen state.
+		/// Refresh the cached license tier and status from the native side.
 		/// </summary>
 		public void RefreshLicenseState()
 		{
 			_licenseTier = (LicenseTier)FTBridge.FT_GetLicenseTier();
 			_licenseStatus = (LicenseStatus)FTBridge.FT_GetLicenseStatus();
-			_licenseFrozen = FTBridge.FT_IsLicenseFrozen();
 		}
 
 		private string FindLicenseInStreamingAssets()
@@ -533,28 +1027,6 @@ namespace IV.FormulaTracker
 #endif
 		}
 
-		[System.Obsolete("Free tier deprecated. Kept for future reuse.")]
-		internal static string GenerateFreeLicense()
-		{
-			string deviceName = SystemInfo.deviceName
-				.Replace("\\", "\\\\").Replace("\"", "\\\"");
-			string payload = $"{{\"licenseType\":\"free\",\"licenseeName\":\"{deviceName}\"}}";
-			string payloadB64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(payload));
-			string licJson = $"{{\"payload\":\"{payloadB64}\",\"signature\":\"\",\"version\":1}}";
-
-			try
-			{
-				string path = Path.Combine(Application.persistentDataPath, "FormulaTracker.lic");
-				File.WriteAllText(path, licJson);
-			}
-			catch (Exception e)
-			{
-				Debug.LogWarning($"[XRTracker] Could not save Free license: {e.Message}");
-			}
-
-			return licJson;
-		}
-
 		#endregion
 
 		#region Unity Lifecycle
@@ -568,6 +1040,8 @@ namespace IV.FormulaTracker
 			}
 
 			_instance = this;
+			_managerThreadId = Thread.CurrentThread.ManagedThreadId;
+			_completedFrameClock.Reset(FTBridge.SequenceSeekEpoch);
 
 			LoadLicense();
 			EnsureLicenseWatermark();
@@ -582,6 +1056,26 @@ namespace IV.FormulaTracker
 
 			// Auto-create TrackedBodyManager if not present
 			EnsureTrackedBodyManager();
+			TrackedBodyManager.Instance?.ResetCompletedFrameOrderState();
+
+#if HAS_AR_FOUNDATION
+			EnsureLiveFusionObservationSource();
+#endif
+			// A recording with camera poses that plays under pose fusion needs the camera moved along those poses, and the driver has to
+			// exist before the bodies are enabled so it can seat the scene in the recording's world frame.
+			EnsureRecordedCameraPoseDriver(_imageSource == ImageSource.Sequence && UseARPoseFusion);
+		}
+
+		/// <summary>
+		/// Adds the recorded camera pose driver to the tracker's object when a recording with camera poses plays under pose fusion and the
+		/// scene has no driver yet. A scene that carries one is left alone, so the camera is not driven twice.
+		/// </summary>
+		private void EnsureRecordedCameraPoseDriver(bool posesPlayUnderFusion)
+		{
+			if (!Recording.RecordedCameraPoseDriverPolicy.ShouldAttach(posesPlayUnderFusion, Recording.RecordedCameraPoseDriver.ExistsInScene()))
+				return;
+			gameObject.AddComponent<Recording.RecordedCameraPoseDriver>();
+			Debug.Log("[XRTracker] The camera follows the recorded camera poses of this recording.");
 		}
 
 		private void EnsureTrackedBodyManager()
@@ -603,10 +1097,12 @@ namespace IV.FormulaTracker
 				return;
 			}
 
+#pragma warning disable CS0618 // The Free and Trial tiers are retired, but a license file can still name them.
 			bool needsWatermark = _licenseTier == LicenseTier.Free ||
 			                      _licenseTier == LicenseTier.Trial ||
 			                      _licenseTier == LicenseTier.Developer ||
 			                      _licenseStatus == LicenseStatus.Expired;
+#pragma warning restore CS0618
 			if (!needsWatermark) return;
 			if (GetComponent<LicenseWatermark>() != null) return;
 			gameObject.AddComponent<LicenseWatermark>();
@@ -655,17 +1151,22 @@ namespace IV.FormulaTracker
 			// Check if async injected tracking completed
 			if (_injectedTrackingInProgress && _trackingStepComplete)
 			{
-				AfterTrackingStep();
-				_injectedTrackingInProgress = false;
-				_nativeAccessLock.Release(); // Release lock acquired in FeedFrameAsync
+				try
+				{
+					CompleteNativeTrackingStepFromUpdate(_trackingStepResult);
+				}
+				finally
+				{
+					ReleaseInjectedTrackingOwnership();
+				}
 			}
 
 			CheckScreenAspectChange();
-			// Update tracking state for all bodies - handled by TrackedBodyManager
-			TrackedBodyManager.Instance?.UpdateAllBodies();
 
 			if (!_hasExecutedDetection)
 			{
+				// Replay and camera capture queue the first step before this runs, so it may still be in flight.
+				WaitForTrackingStepToReturn();
 				FTBridge.FT_ExecuteDetection();
 				_hasExecutedDetection = true;
 			}
@@ -677,6 +1178,15 @@ namespace IV.FormulaTracker
 
 			while (_trackingReady && _isInitialized)
 			{
+				// A deterministic replay owns every frame it drives, so this loop
+				// must not dispatch alongside it. The loop stays alive, so leaving
+				// that mode resumes ordinary playback without restarting anything.
+				if (_deterministicReplayHold || _deterministicReplayOwnsPlayback)
+				{
+					yield return null;
+					continue;
+				}
+
 				float frameStart = Time.realtimeSinceStartup;
 
 				// Try to acquire native lock - skip frame if body registration in progress
@@ -686,37 +1196,59 @@ namespace IV.FormulaTracker
 					continue;
 				}
 
-				// 1. Run BeforeTrackingStep on main thread (accesses Unity transforms)
-				BeforeTrackingStep();
-
-				// 2. Run FT_TrackStep on background thread (heavy computation)
-				_trackingStepComplete = false;
-				ThreadPool.QueueUserWorkItem(_ =>
+				bool dispatchedStep = false;
+				try
 				{
-					try
+					// 1. Run BeforeTrackingStep on main thread (accesses Unity transforms).
+					// Sequence and native capture have no managed FT_FeedFrame call, so this
+					// is where their frame-write decision begins.
+					if (!FrameWriteGuard.BeginFrame())
+						continue;
+					if (!BeforeTrackingStep())
+						continue;
+
+					if (RecoverySynchronousStepMode.IsActiveForSequence(
+						_recoverySynchronousStepMode, _imageSource == ImageSource.Sequence))
 					{
-						FTBridge.FT_TrackStep();
+						// Recovery owns one paused/seeked frame at a time. Keeping this
+						// controlled phase on the main thread lets recovery read the tracker
+						// right after the step, under the native thread contract, without
+						// moving ordinary frames.
+						++_dispatchSerial;
+						_dispatchedSequenceFrame = OpenSequenceDispatch();
+						_trackingStepResult = FTBridge.FT_TrackStep();
+						dispatchedStep = true;
+						CompleteNativeTrackingStepFromCoroutine(_trackingStepResult);
 					}
-					finally
+					else
 					{
-						lock (_trackingLock)
+						// Ordinary sequence and native capture keep the asynchronous path.
+						++_dispatchSerial;
+						_dispatchedSequenceFrame = OpenSequenceDispatch();
+						QueueNativeTrackingStep();
+						dispatchedStep = true;
+
+						// Wait for background thread to complete (non-blocking yield).
+						while (!_trackingStepComplete)
 						{
-							_trackingStepComplete = true;
+							yield return null;
 						}
+
+						// Publish results only when native consumed the submitted frame.
+						CompleteNativeTrackingStepFromCoroutine(_trackingStepResult);
 					}
-				});
-
-				// 3. Wait for background thread to complete (non-blocking yield)
-				while (!_trackingStepComplete)
-				{
-					yield return null;
 				}
-
-				// 4. Run AfterTrackingStep on main thread (accesses Unity transforms)
-				AfterTrackingStep();
-
-				// 5. Release native lock after tracking step completes
-				_nativeAccessLock.Release();
+				finally
+				{
+					if (!dispatchedStep)
+						FrameWriteGuard.AbortFrame();
+					_nativeAccessLock.Release();
+					if (RecoverySynchronousStepMode.MustRestoreAfterCurrentDispatch(
+						_recoverySynchronousStepMode, _trackingReady))
+					{
+						ExitRecoverySynchronousStepMode();
+					}
+				}
 
 				// 6. Process image callback to update background texture (must be after tracking to sync with pose)
 				if (UsesNativeCapture)
@@ -739,6 +1271,8 @@ namespace IV.FormulaTracker
 
 		private void OnDestroy()
 		{
+			FrameWriteGuard.Clear();
+			ExitRecoverySynchronousStepMode();
 			_trackingReady = false;
 			if (_trackingCoroutine != null)
 			{
@@ -755,13 +1289,11 @@ namespace IV.FormulaTracker
 				waitCount++;
 			}
 
-			// Wait for any in-progress async injected tracking to complete
-			waitCount = 0;
-			while (_injectedTrackingInProgress && waitCount < 100)
-			{
-				Thread.Sleep(10);
-				waitCount++;
-			}
+
+			// Update no longer runs during teardown, so it cannot release an
+			// injected feed that has just completed.
+			if (_trackingStepComplete)
+				ReleaseInjectedTrackingOwnership();
 
 			// Free the pinned frame buffer handle
 			if (_injectedFrameHandleAllocated)
@@ -774,6 +1306,11 @@ namespace IV.FormulaTracker
 
 			_isInitialized = false;
 			_cameraTransform = null;
+
+#if HAS_AR_FOUNDATION
+			Recording.SequenceARPlaybackBinder.Unbind();
+			ResetFusionFrameState();
+#endif
 
 			FTBridge.FT_Shutdown();
 
@@ -805,21 +1342,38 @@ namespace IV.FormulaTracker
 			int screenRotation = 0)
 		{
 			if (_imageSource != ImageSource.Injected || !_isInitialized) return;
+			if (!_nativeAccessLock.Wait(0)) return;
 
-			GCHandle handle = GCHandle.Alloc(rgbData, GCHandleType.Pinned);
 			try
 			{
-				FTBridge.FT_FeedFrame(handle.AddrOfPinnedObject(), width, height,
-					fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
-				OnFrameFed?.Invoke(handle.AddrOfPinnedObject(), width, height,
-					fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
-				BeforeTrackingStep();
-				FTBridge.FT_TrackStep();
-				AfterTrackingStep();
+				if (!FrameWriteGuard.BeginFrame())
+					return;
+				GCHandle handle = GCHandle.Alloc(rgbData, GCHandleType.Pinned);
+				try
+				{
+					_fedScreenRotation = Mathf.Clamp(screenRotation, 0, 3);
+					if (FrameWriteGuard.Record(
+					FTBridge.FT_FeedFrame(handle.AddrOfPinnedObject(), width, height,
+						fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation),
+					"FT_FeedFrame"))
+					{
+						OnFrameFed?.Invoke(handle.AddrOfPinnedObject(), width, height,
+							fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
+					}
+					if (BeforeTrackingStep())
+					{
+						CompleteNativeTrackingStep(FTBridge.FT_TrackStep());
+					}
+				}
+				finally
+				{
+					handle.Free();
+				}
 			}
 			finally
 			{
-				handle.Free();
+				FrameWriteGuard.AbortFrame();
+				_nativeAccessLock.Release();
 			}
 		}
 
@@ -833,22 +1387,46 @@ namespace IV.FormulaTracker
 			int screenRotation = 0)
 		{
 			if (_imageSource != ImageSource.Injected || !_isInitialized) return;
+			if (!_nativeAccessLock.Wait(0)) return;
 
-			FTBridge.FT_FeedFrame(rgbData, width, height,
-				fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
-			OnFrameFed?.Invoke(rgbData, width, height,
-				fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
-			BeforeTrackingStep();
-			FTBridge.FT_TrackStep();
-			AfterTrackingStep();
+			try
+			{
+				if (!FrameWriteGuard.BeginFrame())
+					return;
+				_fedScreenRotation = Mathf.Clamp(screenRotation, 0, 3);
+				if (FrameWriteGuard.Record(
+					FTBridge.FT_FeedFrame(rgbData, width, height,
+						fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation),
+					"FT_FeedFrame"))
+				{
+					OnFrameFed?.Invoke(rgbData, width, height,
+						fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
+				}
+				if (BeforeTrackingStep())
+				{
+					CompleteNativeTrackingStep(FTBridge.FT_TrackStep());
+				}
+			}
+			finally
+			{
+				FrameWriteGuard.AbortFrame();
+				_nativeAccessLock.Release();
+			}
 		}
 
-		/// <summary>Sequence directory for Sequence mode.</summary>
+		/// <summary>Sequence directory for Sequence mode (as set by the caller — may be a parent).</summary>
 		public string SequenceDirectory
 		{
 			get => _sequenceDirectory;
 			set => _sequenceDirectory = value;
 		}
+
+		/// <summary>
+		/// Resolved sequence directory used by the current session (after parent-folder
+		/// disambiguation). Set during InitializeSequenceAsync; null in non-sequence modes.
+		/// </summary>
+		public string ResolvedSequenceDirectory => _resolvedSequenceDirectory;
+		private string _resolvedSequenceDirectory;
 
 		/// <summary>
 		/// Feed a frame with intrinsics and run tracking asynchronously (frees main thread).
@@ -879,61 +1457,54 @@ namespace IV.FormulaTracker
 			if (!_nativeAccessLock.Wait(0))
 				return false;
 
-			// Ensure buffer is allocated and correct size
-			int requiredSize = width * height * 3;
-			if (_injectedFrameBuffer == null || _injectedFrameBuffer.Length != requiredSize)
+			bool queuedStep = false;
+			try
 			{
-				// Free previous handle if allocated
-				if (_injectedFrameHandleAllocated)
+				int requiredSize = width * height * 3;
+				if (_injectedFrameBuffer == null || _injectedFrameBuffer.Length != requiredSize)
 				{
-					_injectedFrameHandle.Free();
-					_injectedFrameHandleAllocated = false;
-				}
-
-				_injectedFrameBuffer = new byte[requiredSize];
-			}
-
-			// Copy frame data (so caller can reuse their buffer)
-			Buffer.BlockCopy(rgbData, 0, _injectedFrameBuffer, 0, requiredSize);
-
-			// Pin buffer for native access
-			if (!_injectedFrameHandleAllocated)
-			{
-				_injectedFrameHandle = GCHandle.Alloc(_injectedFrameBuffer, GCHandleType.Pinned);
-				_injectedFrameHandleAllocated = true;
-			}
-
-			// Feed frame with intrinsics to native
-			FTBridge.FT_FeedFrame(_injectedFrameHandle.AddrOfPinnedObject(), width, height,
-				fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
-			OnFrameFed?.Invoke(_injectedFrameHandle.AddrOfPinnedObject(), width, height,
-				fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
-
-			// Run BeforeTrackingStep on main thread (needs Unity transforms)
-			BeforeTrackingStep();
-
-			// Mark tracking in progress
-			_injectedTrackingInProgress = true;
-
-			// Run heavy tracking computation on background thread
-			_trackingStepComplete = false;
-			ThreadPool.QueueUserWorkItem(_ =>
-			{
-				try
-				{
-					FTBridge.FT_TrackStep();
-				}
-				finally
-				{
-					// Signal completion - AfterTrackingStep will be called in Update
-					lock (_trackingLock)
+					if (_injectedFrameHandleAllocated)
 					{
-						_trackingStepComplete = true;
+						_injectedFrameHandle.Free();
+						_injectedFrameHandleAllocated = false;
 					}
+					_injectedFrameBuffer = new byte[requiredSize];
 				}
-			});
+				Buffer.BlockCopy(rgbData, 0, _injectedFrameBuffer, 0, requiredSize);
+				if (!_injectedFrameHandleAllocated)
+				{
+					_injectedFrameHandle = GCHandle.Alloc(_injectedFrameBuffer, GCHandleType.Pinned);
+					_injectedFrameHandleAllocated = true;
+				}
 
-			return true;
+				if (!FrameWriteGuard.BeginFrame())
+					return false;
+				_fedScreenRotation = Mathf.Clamp(screenRotation, 0, 3);
+				if (FrameWriteGuard.Record(
+					FTBridge.FT_FeedFrame(_injectedFrameHandle.AddrOfPinnedObject(), width, height,
+						fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation),
+					"FT_FeedFrame"))
+				{
+					OnFrameFed?.Invoke(_injectedFrameHandle.AddrOfPinnedObject(), width, height,
+						fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
+				}
+				if (!BeforeTrackingStep())
+					return false;
+
+				QueueNativeTrackingStep();
+				queuedStep = true;
+				_injectedTrackingInProgress = true;
+				return true;
+			}
+			finally
+			{
+				if (!queuedStep)
+				{
+					_injectedTrackingInProgress = false;
+					FrameWriteGuard.AbortFrame();
+					_nativeAccessLock.Release();
+				}
+			}
 		}
 
 		/// <summary>
@@ -962,37 +1533,37 @@ namespace IV.FormulaTracker
 			if (!_nativeAccessLock.Wait(0))
 				return false;
 
-			// Feed frame with intrinsics to native
-			FTBridge.FT_FeedFrame(rgbData, width, height,
-				fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
-			OnFrameFed?.Invoke(rgbData, width, height,
-				fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
-
-			// Run BeforeTrackingStep on main thread (needs Unity transforms)
-			BeforeTrackingStep();
-
-			// Mark tracking in progress
-			_injectedTrackingInProgress = true;
-
-			// Run heavy tracking computation on background thread
-			_trackingStepComplete = false;
-			ThreadPool.QueueUserWorkItem(_ =>
+			bool queuedStep = false;
+			try
 			{
-				try
+				if (!FrameWriteGuard.BeginFrame())
+					return false;
+				_fedScreenRotation = Mathf.Clamp(screenRotation, 0, 3);
+				if (FrameWriteGuard.Record(
+					FTBridge.FT_FeedFrame(rgbData, width, height,
+						fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation),
+					"FT_FeedFrame"))
 				{
-					FTBridge.FT_TrackStep();
+					OnFrameFed?.Invoke(rgbData, width, height,
+						fuNorm, fvNorm, ppuNorm, ppvNorm, screenRotation);
 				}
-				finally
-				{
-					// Signal completion - AfterTrackingStep will be called in Update
-					lock (_trackingLock)
-					{
-						_trackingStepComplete = true;
-					}
-				}
-			});
+				if (!BeforeTrackingStep())
+					return false;
 
-			return true;
+				QueueNativeTrackingStep();
+				queuedStep = true;
+				_injectedTrackingInProgress = true;
+				return true;
+			}
+			finally
+			{
+				if (!queuedStep)
+				{
+					_injectedTrackingInProgress = false;
+					FrameWriteGuard.AbortFrame();
+					_nativeAccessLock.Release();
+				}
+			}
 		}
 
 		/// <summary>
@@ -1002,8 +1573,12 @@ namespace IV.FormulaTracker
 		{
 			if (!_isInitialized) return;
 
-			FTBridge.FT_FeedDepthFrame(depthData, width, height);
-			OnDepthFrameFed?.Invoke(depthData, width, height, 0f);
+			WaitForTrackingStepToReturn();
+			if (DepthFrameFeed.ShouldNotify(
+				FTBridge.FT_FeedDepthFrame(depthData, width, height)))
+			{
+				OnDepthFrameFed?.Invoke(depthData, width, height, 0f);
+			}
 		}
 
 		/// <summary>
@@ -1016,6 +1591,7 @@ namespace IV.FormulaTracker
 			if (_depthImageCallbackDelegate == null)
 				_depthImageCallbackDelegate = OnDepthImageReceived;
 
+			WaitForTrackingStepToReturn();
 			FTBridge.FT_SetDepthImageCallback(_depthImageCallbackDelegate, IntPtr.Zero);
 		}
 
@@ -1025,6 +1601,7 @@ namespace IV.FormulaTracker
 		/// </summary>
 		public void DisableDepthForwarding()
 		{
+			WaitForTrackingStepToReturn();
 			FTBridge.FT_SetDepthImageCallback(null, IntPtr.Zero);
 		}
 
@@ -1097,6 +1674,7 @@ namespace IV.FormulaTracker
 		{
 			if (!_trackingReady) return;
 
+			ExitRecoverySynchronousStepMode();
 			_trackingReady = false;
 			// Coroutine will exit on next iteration when it checks _trackingReady
 			OnTrackingPaused?.Invoke();
@@ -1116,13 +1694,230 @@ namespace IV.FormulaTracker
 
 		public void StartDetection()
 		{
+			WaitForTrackingStepToReturn();
 			FTBridge.FT_ExecuteDetection();
 			_hasExecutedDetection = true;
+			// Detection returns every body to judging its seat as placed.
+			foreach (TrackedBody body in _trackedBodies)
+			{
+				if (body != null)
+					body.ForgetRefinementBeforeAcceptance();
+			}
 		}
 
 		public void StartTracking()
 		{
+			WaitForTrackingStepToReturn();
 			FTBridge.FT_StartTracking();
+		}
+
+		/// <summary>
+		/// Enables synchronous dispatch only for a paused recovery sequence after an
+		/// ordinary replay has completed. It refuses any source other than a settled
+		/// sequence step, so it cannot alter an ordinary in-flight dispatch.
+		/// </summary>
+		internal bool TryEnterRecoverySynchronousStepMode()
+		{
+			if (!RecoverySynchronousStepMode.CanEnter(
+					_isInitialized, _trackingReady, _trackingStepComplete,
+					_imageSource == ImageSource.Sequence, _recoverySynchronousStepMode))
+			{
+				return false;
+			}
+			_recoverySynchronousStepMode = true;
+			return true;
+		}
+
+		/// <summary>
+		/// Restores normal asynchronous sequence dispatch. It is idempotent so all
+		/// terminal paths can call it without depending on their predecessor.
+		/// </summary>
+		internal void ExitRecoverySynchronousStepMode()
+		{
+			_recoverySynchronousStepMode = false;
+		}
+
+		/// <summary>
+		/// True while a host owns sequence playback frame by frame and this
+		/// manager's own loop dispatches nothing.
+		/// </summary>
+		internal bool DeterministicReplayOwnsPlayback => _deterministicReplayOwnsPlayback;
+
+		/// <summary>Tracking steps this manager has dispatched.</summary>
+		internal long DispatchSerial => _dispatchSerial;
+
+		/// <summary>Dispatch completions this manager has processed.</summary>
+		internal long CompletionSerial => _completionSerial;
+
+		/// <summary>Completed steps this manager has published to subscribers.</summary>
+		internal long PublicationSerial => _publicationSerial;
+
+		/// <summary>
+		/// The sequence frame the most recent dispatch was opened for, or -1 for a
+		/// source that has no sequence frame.
+		/// </summary>
+		internal int DispatchedSequenceFrame => _dispatchedSequenceFrame;
+
+		private int SequenceFrameForDispatch() =>
+			_imageSource == ImageSource.Sequence
+				? FTBridge.FT_GetSequenceCurrentFrame()
+				: -1;
+
+		/// <summary>
+		/// Returns the sequence frame the step being dispatched is opened for, and starts a new playback pass first when that frame
+		/// is the start of a wrap of the loop or a repeat of a single frame. Only the manager's own loop calls it, so a host that
+		/// drives the frames itself keeps the frame order it chose.
+		/// </summary>
+		private int OpenSequenceDispatch()
+		{
+			int frame = SequenceFrameForDispatch();
+			if (SequencePassBoundary.OpensNewPass(
+				_imageSource == ImageSource.Sequence, FTBridge.SequenceLoop, _dispatchedSequenceFrame, frame))
+			{
+				FTBridge.BeginSequencePass();
+			}
+			return frame;
+		}
+
+		/// <summary>
+		/// Hands sequence playback to a host that drives one named frame at a time.
+		/// </summary>
+		/// <remarks>
+		/// <para>Ordinary playback lets the camera decide the next frame and lets
+		/// this manager's loop decide when to ask for it. Both decisions depend on
+		/// elapsed time, so the number of tracking steps a recorded frame receives
+		/// is not a property of the recording. A host that needs the same recording
+		/// to produce the same trajectory takes both decisions itself through this
+		/// seam.</para>
+		/// <para>This is deliberately not the recovery synchronous mode. That mode
+		/// exists to keep one read right after the step on the tracking thread for
+		/// a phase that is already paused, and it hands dispatch straight back;
+		/// this one suppresses dispatch entirely for as long as the host holds it.</para>
+		/// <para>Detection is executed here if it has not run yet, so no driven
+		/// frame is the one that first executes it.</para>
+		/// </remarks>
+		/// <returns>False when the source is not a sequence, the manager is not
+		/// initialized, a step is in flight, or a mode already owns dispatch.</returns>
+		/// <summary>
+		/// Stops this manager's own loop from dispatching, before it has one.
+		/// </summary>
+		/// <remarks>
+		/// The loop is started as part of initialization and runs its first
+		/// iteration immediately, which for a recorded sequence consumes a frame
+		/// before anything outside the manager has had a chance to say otherwise.
+		/// A host that intends to drive every frame declares that here, while the
+		/// manager is still uninitialized, so frame zero of the recording is the
+		/// first frame the tracker ever sees.
+		/// </remarks>
+		internal void HoldPlaybackForDeterministicReplay()
+		{
+			_deterministicReplayHold = true;
+		}
+
+		internal bool TryEnterDeterministicReplayMode()
+		{
+			if (!_isInitialized || _imageSource != ImageSource.Sequence)
+				return false;
+			if (_deterministicReplayOwnsPlayback || _recoverySynchronousStepMode)
+				return false;
+			if (!_trackingStepComplete)
+				return false;
+
+			_deterministicReplayOwnsPlayback = true;
+			if (!_hasExecutedDetection)
+			{
+				WaitForTrackingStepToReturn();
+				FTBridge.FT_ExecuteDetection();
+				_hasExecutedDetection = true;
+			}
+			// Nothing may advance the recording between driven frames.
+			FTBridge.FT_SequencePause();
+			return true;
+		}
+
+		/// <summary>
+		/// Returns sequence playback to this manager's own loop. Idempotent.
+		/// </summary>
+		internal void ExitDeterministicReplayMode()
+		{
+			_deterministicReplayHold = false;
+			if (!_deterministicReplayOwnsPlayback)
+				return;
+			_deterministicReplayOwnsPlayback = false;
+			FTBridge.FT_SequencePlay();
+		}
+
+		/// <summary>
+		/// Drives exactly one tracking step on one named sequence frame.
+		/// </summary>
+		/// <remarks>
+		/// The camera is moved onto the frame before the step, so the step cannot read a
+		/// different one, and the step's account is inferred afterwards from the camera's
+		/// cursor, so the caller can check what it read. Everything between those two
+		/// points is the ordinary path: the same frame-write guard, the same
+		/// before-step, the same completion and the same publication that live capture
+		/// uses.
+		/// </remarks>
+		internal DeterministicReplayStepOutcome ExecuteDeterministicReplayStep(int frameIndex)
+		{
+			if (!_deterministicReplayOwnsPlayback)
+				return DeterministicReplayStepOutcome.Refused("no host owns playback");
+			if (!_isInitialized || _imageSource != ImageSource.Sequence)
+				return DeterministicReplayStepOutcome.Refused("the source is not a sequence");
+			if (!_nativeAccessLock.Wait(0))
+				return DeterministicReplayStepOutcome.Refused("native access is held elsewhere");
+
+			bool dispatchedStep = false;
+			bool cameraMoved = false;
+			try
+			{
+				if (!FrameWriteGuard.BeginFrame())
+					return DeterministicReplayStepOutcome.Refused("the frame write guard refused the frame");
+				cameraMoved = true;
+				if (!FTBridge.SeekSequenceForDrivenStep(frameIndex))
+					return DeterministicReplayStepOutcome.Refused($"frame {frameIndex} is outside the recording");
+				int cursorBefore = FTBridge.FT_GetSequenceCurrentFrame();
+				if (!BeforeTrackingStep())
+					return DeterministicReplayStepOutcome.Refused("the before-step refused the frame");
+
+				++_dispatchSerial;
+				_dispatchedSequenceFrame = frameIndex;
+				long dispatchSerial = _dispatchSerial;
+
+				int result = FTBridge.FT_TrackStep();
+				dispatchedStep = true;
+				_trackingStepResult = result;
+				// The plugin states no account of which frame a driven step read, so the account is
+				// inferred from the camera's cursor, which the ledger can still contradict.
+				FTTrackStepToken token = SequenceStepAccount.Infer(
+					dispatchSerial, frameIndex, cursorBefore, FTBridge.FT_GetSequenceCurrentFrame(), result);
+
+				bool published = CompleteNativeTrackingStep(result);
+				FTBridge.FT_ProcessImageCallback();
+				FTBridge.FT_ProcessDepthImageCallback();
+				return DeterministicReplayStepOutcome.Executed(
+					dispatchSerial, _completionSerial, _publicationSerial, result, published, token);
+			}
+			finally
+			{
+				if (!dispatchedStep)
+					FrameWriteGuard.AbortFrame();
+				// The moved camera is unpaused to read its one frame. Nothing may advance the
+				// recording between driven frames, so it is held again whichever way this ended.
+				if (cameraMoved)
+					FTBridge.FT_SequencePause();
+				_nativeAccessLock.Release();
+			}
+		}
+
+		/// <summary>
+		/// Prevents another coroutine dispatch after the current tracking step
+		/// returns. Unlike <see cref="PauseTracking"/>, it deliberately leaves the
+		/// recovery dispatcher enabled until that step has released native access.
+		/// </summary>
+		internal void RequestStopAfterCurrentTrackingStep()
+		{
+			_trackingReady = false;
 		}
 
 		/// <summary>
@@ -1144,8 +1939,40 @@ namespace IV.FormulaTracker
 		/// </summary>
 		public void UnregisterTrackedBody(TrackedBody body)
 		{
+			int registeredBefore = CountRegisteredTrackedBodies();
 			if (_trackedBodies.Remove(body))
+			{
+				int registeredAfter = CountRegisteredTrackedBodies();
+				if (CompletedFrameRegistrationBoundary.ClearsDormantOrderState(
+					registeredBefore, registeredAfter))
+				{
+					_completedFrameClock.Reset(FTBridge.SequenceSeekEpoch);
+					TrackedBodyManager.Instance?.ResetCompletedFrameOrderState();
+				}
 				OnBodyUnregistered?.Invoke(body);
+			}
+		}
+
+		private int CountRegisteredTrackedBodies()
+		{
+			int count = 0;
+			foreach (TrackedBody body in _trackedBodies)
+			{
+				if (body != null && body.IsRegistered)
+					count++;
+			}
+			return count;
+		}
+
+		private IReadOnlyList<TrackedBody> CaptureCompletedStepRegisteredBodies()
+		{
+			_completedStepRegisteredBodies.Clear();
+			foreach (TrackedBody body in _trackedBodies)
+			{
+				if (body != null && body.IsRegistered)
+					_completedStepRegisteredBodies.Add(body);
+			}
+			return _completedStepRegisteredBodies;
 		}
 
 		/// <summary>
@@ -1166,70 +1993,694 @@ namespace IV.FormulaTracker
 			_nativeAccessLock.Release();
 		}
 
-		/// <summary>
-		/// Called before native tracking step on all registered bodies.
-		/// </summary>
-		public void BeforeTrackingStep()
+		internal bool TryPublishTrackedBodyRegistration(
+			TrackedBody body,
+			Func<bool> lifecycleIsCurrent,
+			Action markRegistered,
+			Action cancelNativeRegistration)
 		{
-			// Feed AR camera pose to native tracker.
-			// Phase 2 (anchor exists and is tracked): send camera-in-anchor-space → C++ runs in anchor frame.
-			// Phase 1 (no anchor or anchor unreliable): send camera-in-world-space → legacy behavior.
-			// After sending camera pose, run any pending Phase 1→2 body switchover so the next
-			// FT_TrackStep sees a consistent reference frame for both camera and bodies.
-			if (UseARPoseFusion && _cameraTransform != null)
+			if (body == null || lifecycleIsCurrent == null || markRegistered == null ||
+				cancelNativeRegistration == null)
+				return false;
+			if (!IsManagerThread || _nativeAccessLock.CurrentCount != 0)
+				return false;
+			if (!lifecycleIsCurrent())
 			{
-#if HAS_AR_FOUNDATION
-				var fusion = TrackedBodyManager.Instance != null ? TrackedBodyManager.Instance.ARPoseFusion : null;
-				FTTrackingPose camPose;
-				bool sentAnchorSpace = false;
-
-				if (fusion != null && fusion.TryGetCameraInAnchorSpace(_cameraTransform, out var camMatrix))
-				{
-					camPose = ConversionUtils.GetConvertedPose(camMatrix);
-					sentAnchorSpace = true;
-				}
-				else
-				{
-					camPose = ConversionUtils.GetConvertedPose(_cameraTransform.position, _cameraTransform.rotation);
-				}
-
-				FTBridge.FT_SetCameraWorldPose(ref camPose);
-
-				if (sentAnchorSpace)
-					TrackedBodyManager.Instance.TryPerformAnchorSwitchover();
-#else
-				var camPose = ConversionUtils.GetConvertedPose(_cameraTransform.position, _cameraTransform.rotation);
-				FTBridge.FT_SetCameraWorldPose(ref camPose);
-#endif
+				cancelNativeRegistration();
+				return false;
 			}
 
-			foreach (var body in _trackedBodies)
-			{
-				if (body != null && body.IsRegistered)
-				{
-					body.BeforeTrackingStep();
-				}
-			}
-
-			// Notify subscribers
-			OnBeforeTrackingStep?.Invoke();
+			markRegistered();
+			RegisterTrackedBody(body);
+			return true;
 		}
 
 		/// <summary>
-		/// Called after native tracking step on all registered bodies.
+		/// Called before native tracking step on all registered bodies.
 		/// </summary>
-		public void AfterTrackingStep()
+		public bool BeforeTrackingStep()
 		{
-			foreach (var body in _trackedBodies)
+			// Injected feeders open the decision before FT_FeedFrame. Native and
+			// sequence capture reach here first, so open theirs here instead.
+			bool readyForStep = FrameWriteGuard.BeginFrameIfNeeded();
+			try
 			{
-				if (body != null && body.IsRegistered)
+			if (!readyForStep)
+				return false;
+
+			// Feed the AR camera pose to the native tracker, in the AR session's world frame.
+#if HAS_AR_FOUNDATION
+			if (UseARPoseFusion)
+			{
+				int expectedFrameIndex = _imageSource == ImageSource.Sequence
+					? FTBridge.FT_GetSequenceCurrentFrame()
+					: _nextLiveFusionFrameIndex++;
+				long timestampNs = (long)(Time.realtimeSinceStartupAsDouble * 1_000_000_000.0);
+				bool hasObservation;
+				FusionFrameObservation observation = default;
+				if (_imageSource == ImageSource.Sequence)
 				{
-					body.AfterTrackingStep();
+					hasObservation = Recording.SequenceARPlaybackBinder.TryGetObservation(
+						expectedFrameIndex,
+						timestampNs,
+						out observation);
+				}
+				else
+				{
+					EnsureLiveFusionObservationSource();
+					hasObservation = _liveFusionObservationSource != null &&
+						_liveFusionObservationSource.TryGetObservation(
+							expectedFrameIndex,
+							timestampNs,
+							out observation);
+				}
+
+				if (!hasObservation)
+				{
+					observation = new FusionFrameObservation(
+						_imageSource == ImageSource.Sequence
+							? FusionObservationSource.Recorded
+							: FusionObservationSource.Live,
+						string.Empty,
+						expectedFrameIndex,
+						timestampNs,
+						false,
+						Matrix4x4.identity,
+						UnityEngine.XR.ARFoundation.ARSessionState.None,
+						UnityEngine.XR.ARSubsystems.NotTrackingReason.None,
+						string.Empty,
+						string.Empty,
+						FusionObservationFailure.SourceUnavailable);
+				}
+
+				FusionFrameContext context = _fusionFrameContextResolver.Resolve(observation);
+				_submittedFusionFrameContext = context;
+				if (!context.IsValid)
+				{
+					ReportFusionObservationRejection(context);
+					readyForStep = false;
+				}
+				else
+				{
+					_lastRejectedFusionFrameIndex = int.MinValue;
+					_lastRejectedFusionFailure = FusionObservationFailure.None;
+
+					if (!FusionCameraPoseSubmission.TrySubmit(context, _fusionCameraPoseSink))
+					{
+						readyForStep = false;
+					}
+					else
+					{
+						_colorCameraPose = context.NativeCameraPose;
+						CarryBodiesWhenTheSessionMovesItsWorld(context);
+					}
 				}
 			}
+#endif
+
+			if (readyForStep)
+			{
+				TurnDepthCameraToScreen();
+
+				foreach (var body in _trackedBodies)
+				{
+					if (body != null && body.IsRegistered)
+					{
+						body.BeforeTrackingStep();
+					}
+				}
+
+#if HAS_AR_FOUNDATION
+				// Snapshot the AR session state per frame on the main thread. The writer
+				// thread picks one of these up when each frame is committed to disk.
+				if (Recording.ARSessionStateWriter.IsActive)
+					Recording.ARSessionStateWriter.CaptureSnapshot();
+#endif
+
+				// Notify subscribers
+				OnBeforeTrackingStep?.Invoke();
+			}
+		}
+		finally
+		{
+			// Always close the decision. This includes rejected fusion observations
+			// and exceptions from subscribers, so a failure cannot leak into the
+			// next frame.
+			if (FrameWriteGuard.ConsumeFailure())
+				readyForStep = false;
+		}
+
+		return readyForStep;
+		}
+
+		/// <summary>
+		/// Turns the injected depth camera about its optical axis to the screen rotation of the colour frame just fed.
+		/// </summary>
+		/// <remarks>
+		/// The plugin turns the colour image clockwise by one quarter turn for portrait, two for landscape right and three for portrait
+		/// upside down, and the camera coordinates turn with it by the same angle about the optical axis. The depth image keeps the
+		/// orientation of the sensor, so the depth camera sits that turn away from the colour camera. The plugin keeps the pose of the depth
+		/// camera in the colour camera from the pose written here, so the turn is composed with the colour camera pose it holds.
+		/// </remarks>
+		private void TurnDepthCameraToScreen()
+		{
+			if (!_injectedDepthCamera || !UseInjectedCamera() || _depthCameraRotation == _fedScreenRotation)
+				return;
+
+			float halfAngle = _fedScreenRotation switch
+			{
+				1 => 45f,
+				2 => 90f,
+				3 => -45f,
+				_ => 0f
+			} * Mathf.Deg2Rad;
+			var turn = new Quaternion(0f, 0f, Mathf.Sin(halfAngle), Mathf.Cos(halfAngle));
+			var color = new Quaternion(_colorCameraPose.rot_x, _colorCameraPose.rot_y, _colorCameraPose.rot_z, _colorCameraPose.rot_w);
+			Quaternion depth = color * turn;
+
+			FTTrackingPose depthPose = _colorCameraPose;
+			depthPose.rot_x = depth.x;
+			depthPose.rot_y = depth.y;
+			depthPose.rot_z = depth.z;
+			depthPose.rot_w = depth.w;
+
+			// An unusable colour pose is retried with the next frame's pose. Any other result settles this rotation.
+			if (FTBridge.FT_SetDepthCameraPose(ref depthPose) != FTErrorCode.INVALID_PARAMETER)
+				_depthCameraRotation = _fedScreenRotation;
+		}
+
+#if HAS_AR_FOUNDATION
+		/// <summary>
+		/// Watches the camera pose of the step that is about to run, and when the AR session has moved its world since the step before, carries
+		/// every body to the new frame, so the tracker steps on a pose that is still in front of the camera. The jump counts as no camera motion,
+		/// because every pose that the lifecycle compares the camera with is carried by the same map.
+		/// </summary>
+		/// <remarks>
+		/// The watch takes the camera pose of every step, also while Follow AR World Jumps is off. The bodies are carried or not by
+		/// <see cref="TrackedBodyManager.CarryBodiesToNewWorld(Pose)"/> after the watch has looked, so turning the setting on during a session
+		/// compares the next step with the step before it and not with the last step from before it was turned off.
+		/// </remarks>
+		private void CarryBodiesWhenTheSessionMovesItsWorld(FusionFrameContext context)
+		{
+			Matrix4x4 worldFromCamera = context.WorldFromCameraUnity;
+			if (!_worldJumpWatch.Observe(worldFromCamera.GetPosition(), worldFromCamera.rotation, context.TimestampNs,
+					FTBridge.SequenceSeekEpoch, out Pose carry))
+				return;
+			TrackedBodyManager bodies = TrackedBodyManager.Instance;
+			if (bodies != null && bodies.CarryBodiesToNewWorld(carry))
+				Debug.Log("[XRTracker] The AR session moved its world, so the tracked bodies were carried over to it.");
+		}
+
+		private void EnsureLiveFusionObservationSource()
+		{
+			IARSpaceProvider provider = TrackedBodyManager.Instance?.ARPoseFusion?.CurrentProvider;
+			if (provider == null || ReferenceEquals(provider, _liveFusionObservationProvider))
+				return;
+			_liveFusionObservationProvider = provider;
+			_liveFusionObservationSource = new LiveFusionFrameObservationSource(
+				() => _cameraTransform,
+				provider);
+		}
+
+		private void ReportFusionObservationRejection(FusionFrameContext context)
+		{
+			if (_lastRejectedFusionFrameIndex != context.FrameIndex ||
+				_lastRejectedFusionFailure != context.Failure)
+			{
+				Debug.LogError($"[XRTracker] Fusion observation rejected at frame " +
+					$"{context.FrameIndex}: {context.Failure}");
+				_lastRejectedFusionFrameIndex = context.FrameIndex;
+				_lastRejectedFusionFailure = context.Failure;
+			}
+			if (_imageSource == ImageSource.Sequence)
+			{
+				if (!FTBridge.FT_SequenceSkipRejectedFrame())
+					_trackingReady = false;
+			}
+		}
+#endif
+
+		private bool TryPublishCompletedTrackingStep()
+		{
+			IReadOnlyList<TrackedBody> registeredBodies =
+				CaptureCompletedStepRegisteredBodies();
+			int registeredBodyCount = registeredBodies.Count;
+#if HAS_AR_FOUNDATION
+			FusionFrameContext? candidateFusionFrameContext =
+				_submittedFusionFrameContext;
+			CompletedFrameStatusToken candidateStatusToken = registeredBodyCount > 0
+				? BuildCompletedFrameStatusToken(candidateFusionFrameContext)
+				: default;
+#else
+			CompletedFrameStatusToken candidateStatusToken = default;
+#endif
+			bool clockValid = TryLatchCompletedFrameClock(
+#if HAS_AR_FOUNDATION
+				candidateFusionFrameContext,
+#endif
+				registeredBodyCount,
+				out CompletedFrameClockSample clockSample,
+				out CompletedFrameClock pendingRecordedClock,
+				out string clockFailure);
+			if (!clockValid)
+			{
+				Debug.LogError($"[XRTracker] Completed-frame clock rejected the step: " +
+					clockFailure + ". " + DescribeLastStep());
+				if (_imageSource == ImageSource.Sequence)
+					_trackingReady = false;
+				return false;
+			}
+
+			TrackedBodyManager bodyManager = TrackedBodyManager.Instance;
+			int refreshedBodyCount = 0;
+			bool refreshSucceeded;
+			if (registeredBodyCount == 0)
+			{
+				refreshSucceeded = true;
+			}
+			else if (bodyManager == null)
+			{
+				refreshSucceeded = false;
+			}
+			else
+			{
+				refreshSucceeded = bodyManager.TryRefreshCompletedBodyStatuses(
+					registeredBodies,
+					candidateStatusToken,
+					clockSample,
+					out refreshedBodyCount);
+			}
+			if (!refreshSucceeded || !CompletedFramePublicationContract.CanPublish(
+				true, registeredBodyCount, refreshedBodyCount))
+			{
+				Debug.LogError($"[XRTracker] Completed frame refreshed {refreshedBodyCount} " +
+					$"of {registeredBodyCount} registered body statuses; publication stopped.");
+				if (_imageSource == ImageSource.Sequence)
+					_trackingReady = false;
+				return false;
+			}
+			if (registeredBodyCount > 0)
+				_completedFrameClock.Commit(pendingRecordedClock);
+
+#if HAS_AR_FOUNDATION
+			CompletedFrameContextCommitContract.CommitIfValid(clockValid, () =>
+			{
+				_completedFusionFrameContext = candidateFusionFrameContext;
+				_submittedFusionFrameContext = null;
+			});
+#endif
+
+			TrackingFrameInstrumentationContext instrumentationContext =
+				BuildTrackingFrameInstrumentationContext(clockSample, registeredBodyCount,
+					refreshedBodyCount);
+			bodyManager?.SetCompletedFrameInstrumentationContext(instrumentationContext);
+
+			foreach (TrackedBody body in registeredBodies)
+			{
+				body.AfterTrackingStep();
+			}
+
+			++_publicationSerial;
+			OnRawTrackingStepCompleted?.Invoke(instrumentationContext);
 
 			// Notify subscribers (TrackedBodyManager uses this for non-SLAM pose application)
 			OnAfterTrackingStep?.Invoke();
+			OnTrackingLifecycleCompleted?.Invoke(instrumentationContext);
+			return true;
+		}
+
+		/// <summary>
+		/// What the last native tracking step did, for a message about a refusal.
+		/// </summary>
+		/// <remarks>
+		/// A refusal that says only which rule was broken leaves the reader to guess
+		/// which of several very different things happened -- the recording ended,
+		/// the camera stalled, a step ran on a frame it had already read. The camera
+		/// publishes a token saying exactly what the step did, so the message says it
+		/// rather than leaving it to be guessed.
+		/// </remarks>
+		private static string DescribeLastStep()
+		{
+			if (!FTBridge.FT_GetLastTrackStepToken(out FTTrackStepToken token))
+				return "The camera published no token for it.";
+			return $"The step read {token.imagesLoaded} frame(s): " +
+				$"requested {token.requestedFrame}, loaded {token.loadedFrame}, " +
+				$"next-read {token.frameIndexBefore} -> {token.frameIndexAfter}, " +
+				$"loads {token.imageLoadSerial}, step {token.stepSerial}, " +
+				$"result {token.result}, paused {token.cameraPaused}, " +
+				$"pending-step {token.cameraPendingStep}, " +
+				$"has-loaded-frame {token.cameraHasLoadedFrame}.";
+		}
+
+		private bool TryLatchCompletedFrameClock(
+#if HAS_AR_FOUNDATION
+			FusionFrameContext? candidateFusionFrameContext,
+#endif
+			int registeredBodyCount,
+			out CompletedFrameClockSample sample,
+			out CompletedFrameClock pendingRecordedClock,
+			out string failure)
+		{
+			pendingRecordedClock = null;
+			if (!CompletedFrameRegistrationBoundary.UsesRecordedClock(
+				_imageSource == ImageSource.Sequence,
+				HasRecordedFusionObservationSource,
+				registeredBodyCount))
+			{
+				sample = CompletedFrameClock.LatchLive(Time.deltaTime);
+				failure = string.Empty;
+				return true;
+			}
+
+#if HAS_AR_FOUNDATION
+			bool hasTimestamp = candidateFusionFrameContext.HasValue &&
+				candidateFusionFrameContext.Value.IsValid;
+			long timestampNs = hasTimestamp
+				? candidateFusionFrameContext.Value.TimestampNs
+				: 0;
+#else
+			bool hasTimestamp = false;
+			long timestampNs = 0;
+#endif
+			return _completedFrameClock.TryPreviewRecorded(
+				hasTimestamp,
+				timestampNs,
+				FTBridge.SequenceSeekEpoch,
+				out sample,
+				out failure,
+				out pendingRecordedClock);
+		}
+
+#if HAS_AR_FOUNDATION
+		private static CompletedFrameStatusToken BuildCompletedFrameStatusToken(
+			FusionFrameContext? candidate)
+		{
+			if (!candidate.HasValue || !candidate.Value.IsValid)
+				return default;
+			FusionFrameContext context = candidate.Value;
+			return new CompletedFrameStatusToken(
+				true,
+				context.Observation.SequenceId,
+				context.FrameIndex,
+				context.TimestampNs);
+		}
+#endif
+
+		/// <summary>
+		/// The frame context for the step that is about to run, for an instrument
+		/// that has to annotate what the step is about to do.
+		/// </summary>
+		/// <remarks>
+		/// The two completed events carry the frame that has just finished, which
+		/// is the right frame for anything describing a result. An instrument that
+		/// stamps a reference the step itself will consume needs the frame the step
+		/// is about to submit, and reading it from a completed event stamps it one
+		/// frame late — an error that is a full frame of camera motion, is frozen
+		/// into whatever it annotates, and is largest exactly where the camera
+		/// moves fastest.
+		/// <para>
+		/// This exposes the submitted context and nothing else: the fusion context
+		/// type stays internal, and the record returned is the same one the
+		/// completed events already publish. It carries no clock sample and no body
+		/// counts, because neither is known before the step has run, and reporting a
+		/// stale one would be the same mistake one level down.
+		/// </para>
+		/// <para>
+		/// Returns false when no submitted context is available, so a caller
+		/// refuses rather than stamping an identity it did not earn.
+		/// </para>
+		/// </remarks>
+		internal bool TryGetSubmittedFrameInstrumentationContext(
+			out TrackingFrameInstrumentationContext context)
+		{
+#if HAS_AR_FOUNDATION
+			if (_submittedFusionFrameContext.HasValue)
+			{
+				FusionFrameContext submitted = _submittedFusionFrameContext.Value;
+				context = new TrackingFrameInstrumentationContext(
+					submitted.IsValid,
+					submitted.Observation.SequenceId,
+					submitted.FrameIndex,
+					submitted.Observation.TimestampNs,
+					submitted.Observation.Source.ToString(),
+					WORLD_TRACKING_SPACE,
+					submitted.Observation.SessionSpaceIdentity,
+					submitted.Observation.SessionSpaceEpoch,
+					ExplicitRecoveryCoordinateEpoch(submitted),
+					submitted.Observation.WorldFromCameraUnity,
+					Matrix4x4.identity,
+					default,
+					0,
+					0);
+				return true;
+			}
+#endif
+			return TryGetSequenceFrameIdentity(out context);
+		}
+
+		/// <summary>
+		/// The identity a replayed frame carries when no fusion observation was
+		/// submitted for it.
+		/// </summary>
+		/// <remarks>
+		/// <para>A replay driven from a recorded sequence has a frame, a tracking
+		/// space and a camera, and it has them whether or not the pose-fusion path
+		/// is running. The space the tracker solves in is the world the scene already
+		/// places the camera in, and the transform between the two is the identity
+		/// rather than a value that has to be looked up. The frame index comes from the sequence itself, which is the
+		/// one identity a replayed frame genuinely has, and the sequence directory
+		/// names the space so two sequences never share one.</para>
+		/// <para>No wall clock is claimed. The recording carries none the manager can
+		/// read here, and a stamp taken from this machine's clock would make the same
+		/// replay produce a different record every run, so the timestamp is reported
+		/// as zero: present, ordered by the frame index beside it, and not pretending
+		/// to be a capture time.</para>
+		/// </remarks>
+		private bool TryGetSequenceFrameIdentity(
+			out TrackingFrameInstrumentationContext context)
+		{
+			context = default;
+			if (_imageSource != ImageSource.Sequence)
+				return false;
+			int frameIndex = FTBridge.FT_GetSequenceCurrentFrame();
+			if (frameIndex < 0)
+				return false;
+			Camera camera = MainCamera;
+			Matrix4x4 worldFromCamera = camera != null
+				? Matrix4x4.TRS(camera.transform.position, camera.transform.rotation,
+					Vector3.one)
+				: Matrix4x4.identity;
+			string identity = string.IsNullOrEmpty(_sequenceDirectory)
+				? "sequence" : _sequenceDirectory;
+			context = new TrackingFrameInstrumentationContext(
+				true,
+				identity,
+				frameIndex,
+				0,
+				"Sequence",
+				"World",
+				identity,
+				0,
+				unchecked((int)FTBridge.SequenceSeekEpoch),
+				worldFromCamera,
+				Matrix4x4.identity,
+				default,
+				0,
+				0);
+			return true;
+		}
+
+		/// <summary>
+		/// The completed frame's identity, for a caller that has to check the space a
+		/// pose was requested in against the space it is about to be applied in.
+		/// </summary>
+		/// <remarks>
+		/// The submitted and the completed identity come from the same two sources in
+		/// the same order, so a saved view and a confirmation are stamped with one
+		/// space and checked against it. Reading them from different sources would
+		/// refuse every confirmation on a session where only one of the two ever had
+		/// an observation.
+		/// </remarks>
+		internal bool TryGetCompletedFrameIdentity(
+			out TrackingFrameInstrumentationContext context)
+		{
+#if HAS_AR_FOUNDATION
+			if (_completedFusionFrameContext.HasValue)
+			{
+				FusionFrameContext completed = _completedFusionFrameContext.Value;
+				context = new TrackingFrameInstrumentationContext(
+					completed.IsValid,
+					completed.Observation.SequenceId,
+					completed.FrameIndex,
+					completed.Observation.TimestampNs,
+					completed.Observation.Source.ToString(),
+					WORLD_TRACKING_SPACE,
+					completed.Observation.SessionSpaceIdentity,
+					completed.Observation.SessionSpaceEpoch,
+					ExplicitRecoveryCoordinateEpoch(completed),
+					completed.Observation.WorldFromCameraUnity,
+					Matrix4x4.identity,
+					default,
+					0,
+					0);
+				return completed.IsValid;
+			}
+#endif
+			return TryGetSequenceFrameIdentity(out context);
+		}
+
+		private TrackingFrameInstrumentationContext BuildTrackingFrameInstrumentationContext(
+			CompletedFrameClockSample clockSample, int registeredBodyCount,
+			int refreshedBodyCount)
+		{
+#if HAS_AR_FOUNDATION
+			if (_completedFusionFrameContext.HasValue)
+			{
+				FusionFrameContext context = _completedFusionFrameContext.Value;
+				return new TrackingFrameInstrumentationContext(
+					context.IsValid,
+					context.Observation.SequenceId,
+					context.FrameIndex,
+					context.Observation.TimestampNs,
+					context.Observation.Source.ToString(),
+					WORLD_TRACKING_SPACE,
+					context.Observation.SessionSpaceIdentity,
+					context.Observation.SessionSpaceEpoch,
+					ExplicitRecoveryCoordinateEpoch(context),
+					context.Observation.WorldFromCameraUnity,
+					Matrix4x4.identity,
+					clockSample,
+					registeredBodyCount,
+					refreshedBodyCount);
+			}
+#endif
+			int frameIndex = _imageSource == ImageSource.Sequence
+				? FTBridge.FT_GetSequenceCurrentFrame()
+				: -1;
+			return new TrackingFrameInstrumentationContext(
+				false,
+				string.Empty,
+				frameIndex,
+				0,
+				string.Empty,
+				string.Empty,
+				string.Empty,
+				0,
+				unchecked((int)FTBridge.SequenceSeekEpoch),
+				Matrix4x4.identity,
+				Matrix4x4.identity,
+				clockSample,
+				registeredBodyCount,
+				refreshedBodyCount);
+		}
+
+#if HAS_AR_FOUNDATION
+		private static int ExplicitRecoveryCoordinateEpoch(FusionFrameContext context)
+		{
+			return unchecked((context.Observation.SessionSpaceEpoch * 397) ^
+				((int)FTBridge.SequenceSeekEpoch * 31));
+		}
+#endif
+
+		private bool CompleteNativeTrackingStep(int result)
+		{
+			++_completionSerial;
+			if (result == 0)
+			{
+				return TryPublishCompletedTrackingStep();
+			}
+
+#if HAS_AR_FOUNDATION
+			if (_submittedFusionFrameContext.HasValue)
+			{
+				Debug.LogError($"[XRTracker] Native tracking rejected submitted frame " +
+					$"{_submittedFusionFrameContext.Value.FrameIndex} with result {result}");
+			}
+			else
+			{
+				Debug.LogError($"[XRTracker] Native tracking step failed with result {result}");
+			}
+			int submittedFrame = _submittedFusionFrameContext.HasValue
+				? _submittedFusionFrameContext.Value.FrameIndex
+				: int.MinValue;
+			_submittedFusionFrameContext = null;
+			if (_imageSource == ImageSource.Sequence &&
+				FTBridge.FT_GetSequenceCurrentFrame() == submittedFrame &&
+				!FTBridge.FT_SequenceSkipRejectedFrame())
+			{
+				_trackingReady = false;
+			}
+#else
+			Debug.LogError($"[XRTracker] Native tracking step failed with result {result}");
+#endif
+			return false;
+		}
+
+		internal bool CompleteNativeTrackingStepFromUpdate(int result)
+		{
+			return CompleteNativeTrackingStep(result);
+		}
+
+		internal bool CompleteNativeTrackingStepFromCoroutine(int result)
+		{
+			return CompleteNativeTrackingStep(result);
+		}
+
+		private void QueueNativeTrackingStep()
+		{
+			_trackingStepResult = int.MinValue;
+			_trackingStepComplete = false;
+			ThreadPool.QueueUserWorkItem(_ =>
+			{
+				try
+				{
+					_trackingStepResult = FTBridge.FT_TrackStep();
+				}
+				finally
+				{
+					lock (_trackingLock)
+					{
+						_trackingStepComplete = true;
+						Monitor.PulseAll(_trackingLock);
+					}
+				}
+			});
+		}
+
+		/// <summary>
+		/// Blocks until the tracking step that runs on the worker thread, if one is in flight, has returned.
+		/// </summary>
+		/// <remarks>
+		/// Only the main thread queues a step, so a native call that changes tracker state, made on the main thread right after this, cannot
+		/// run while a step reads that state. The plugin holds a lock of its own around that state as well, so a call that skips this wait
+		/// still waits inside the plugin. The wait lasts at most one step and
+		/// happens only when a step is in flight, so it costs nothing in the window before or after a step. It does nothing off the main
+		/// thread, where it could not keep the next step from starting and could be the worker itself.
+		/// </remarks>
+		internal static void WaitForTrackingStepToReturn()
+		{
+			XRTrackerManager manager = _instance;
+			if (ReferenceEquals(manager, null) || manager._trackingStepComplete || !manager.IsManagerThread)
+				return;
+
+			lock (manager._trackingLock)
+			{
+				while (!manager._trackingStepComplete)
+					Monitor.Wait(manager._trackingLock);
+			}
+		}
+
+		/// <summary>
+		/// Releases exactly the semaphore acquisition retained by a successfully
+		/// queued injected step. Completion, shutdown, and teardown use this same
+		/// ownership transfer so an inactive Update loop cannot strand the lock.
+		/// </summary>
+		private void ReleaseInjectedTrackingOwnership()
+		{
+			if (!_injectedTrackingInProgress)
+				return;
+			_injectedTrackingInProgress = false;
+			_nativeAccessLock.Release();
 		}
 
 		/// <summary>
@@ -1275,6 +2726,8 @@ namespace IV.FormulaTracker
 				return;
 			}
 
+			_resolvedSequenceDirectory = resolved;
+
 			await ShutdownPreviousSessionAsync();
 
 			FTBridge.FT_SetLogCallback(OnLogMessage);
@@ -1283,6 +2736,22 @@ namespace IV.FormulaTracker
 			int result = await InitTrackerAsync((int)ImageSource.Sequence, IntPtr.Zero);
 			if (result != 0) return;
 
+#if HAS_AR_FOUNDATION
+			// Recorded AR observations are only a replay input while AR fusion is
+			// enabled. In image-only replay, binding a sidecar without a usable
+			// timestamp would otherwise arm the completed-frame recorded clock and
+			// prevent an already completed native step from publishing.
+			if (SequenceReplayFusionBindingPolicy.ShouldBindRecordedFusion(
+				UseARPoseFusion))
+			{
+				Recording.SequenceARPlaybackBinder.TryBind(_resolvedSequenceDirectory);
+				EnsureRecordedCameraPoseDriver(Recording.SequenceARPlaybackBinder.IsBound);
+			}
+			else
+			{
+				Recording.SequenceARPlaybackBinder.Unbind();
+			}
+#endif
 			StartNativeTracking();
 			OnTrackerInitialized?.Invoke();
 		}
@@ -1292,22 +2761,13 @@ namespace IV.FormulaTracker
 		/// </summary>
 		private static string ResolveSequenceDirectory(string dir)
 		{
-			if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
-				return dir;
-
-			if (File.Exists(Path.Combine(dir, "sequence.json")))
-				return dir;
-
-			var subDirs = Directory.GetDirectories(dir);
-			if (subDirs.Length == 0)
-				return dir;
-
-			Array.Sort(subDirs, StringComparer.Ordinal);
-			string latest = subDirs[subDirs.Length - 1];
-
-			Debug.Log($"[XRTracker] No sequence in '{Path.GetFileName(dir)}', " +
-			          $"using latest recording: {Path.GetFileName(latest)}");
-			return latest;
+			string resolved = PoseFusionSourcePolicy.ResolveSequenceDirectory(dir);
+			if (!string.IsNullOrEmpty(resolved) && resolved != dir)
+			{
+				Debug.Log($"[XRTracker] No sequence in '{Path.GetFileName(dir)}', " +
+				          $"using latest recording: {Path.GetFileName(resolved)}");
+			}
+			return resolved;
 		}
 
 		private async Task<bool> InitializeInjectedCoreAsync(FTCameraIntrinsics intrinsics,
@@ -1347,8 +2807,12 @@ namespace IV.FormulaTracker
 				return false;
 			}
 
+			FrameWriteGuard.Clear();
 			_isInitialized = true;
 			_trackingReady = true;
+			_injectedDepthCamera = depthIntrinsics.HasValue;
+			_depthCameraRotation = -1;
+			_colorCameraPose = new FTTrackingPose { rot_w = 1f };
 			_imageWidth = intrinsics.width;
 			_imageHeight = intrinsics.height;
 			_cachedFu = intrinsics.fu_normalized * intrinsics.width;
@@ -1389,7 +2853,7 @@ namespace IV.FormulaTracker
 			if (result != 0)
 			{
 				if (result == FTErrorCode.NOT_SUPPORTED)
-					Debug.LogError("[XRTracker] RealSense not supported - library not compiled with USE_REALSENSE=ON");
+					Debug.LogError("[XRTracker] This plugin build does not support RealSense, so the RealSense image source cannot start.");
 				return false;
 			}
 
@@ -1411,7 +2875,23 @@ namespace IV.FormulaTracker
 		/// </summary>
 		private async Task ShutdownPreviousSessionAsync()
 		{
-			if (!_isInitialized) return;
+			FrameWriteGuard.Clear();
+			FTBridge.ForgetSequencePlaybackState();
+			_completedFrameClock.Reset(FTBridge.SequenceSeekEpoch);
+			TrackedBodyManager.Instance?.ResetCompletedFrameOrderState();
+			ExitRecoverySynchronousStepMode();
+#if HAS_AR_FOUNDATION
+			Recording.SequenceARPlaybackBinder.Unbind();
+			ResetFusionFrameState();
+#endif
+			if (!_isInitialized)
+			{
+				await InjectedTrackingShutdown.DrainAsync(
+					() => _injectedTrackingInProgress,
+					() => _trackingStepComplete,
+					ReleaseInjectedTrackingOwnership);
+				return;
+			}
 
 			_trackingReady = false;
 			if (_trackingCoroutine != null)
@@ -1423,9 +2903,56 @@ namespace IV.FormulaTracker
 			while (!_trackingStepComplete)
 				await Task.Yield();
 
+			// Injected feeds retain the semaphore until Update publishes their
+			// completion. Shutdown runs before a replacement session can enter
+			// Update, so it must drain that retained ownership itself.
+			await InjectedTrackingShutdown.DrainAsync(
+				() => _injectedTrackingInProgress,
+				() => _trackingStepComplete,
+				ReleaseInjectedTrackingOwnership);
+
 			_isInitialized = false;
 			FTBridge.FT_Shutdown();
 			_hasExecutedDetection = false;
+		}
+
+#if HAS_AR_FOUNDATION
+		private void ResetFusionFrameState()
+		{
+			_submittedFusionFrameContext = null;
+			_completedFusionFrameContext = null;
+			_nextLiveFusionFrameIndex = 0;
+			_worldJumpWatch.Reset();
+			_lastRejectedFusionFrameIndex = int.MinValue;
+			_lastRejectedFusionFailure = FusionObservationFailure.None;
+			_liveFusionObservationSource = null;
+			_liveFusionObservationProvider = null;
+		}
+#endif
+
+		/// <summary>
+		/// Refuses to start the native tracker when the loaded plugin lays the
+		/// tracking status block out differently from this build.
+		/// </summary>
+		/// <remarks>
+		/// <c>FT_GetBodyStatus</c> takes no size parameter, so a plugin whose struct
+		/// is larger writes past the end of the managed buffer on every body on
+		/// every frame, with nothing failing at the call site. The handshake that
+		/// detects that already exists; this is the shipping path calling it.
+		/// </remarks>
+		private static bool NativeBoundaryAgrees()
+		{
+			bool statusAgrees = FTBridge.VerifyBodyStatusAbi(out string statusDetail);
+			bool configAgrees = FTBridge.VerifyBodyConfigAbi(out string configDetail);
+			bool layoutAgrees = statusAgrees && configAgrees;
+			string detail = statusAgrees && configAgrees
+				? $"{statusDetail}; {configDetail}"
+				: !statusAgrees ? statusDetail : configDetail;
+			if (FTBridge.MayStartNativeTracker(layoutAgrees, detail, out string report))
+				return true;
+
+			Debug.LogError($"[XRTracker] {report}");
+			return false;
 		}
 
 		/// <summary>
@@ -1433,6 +2960,9 @@ namespace IV.FormulaTracker
 		/// </summary>
 		private async Task<int> InitTrackerAsync(int cameraMode, IntPtr cameraIntrinsics)
 		{
+			if (!NativeBoundaryAgrees())
+				return FTErrorCode.SETUP_FAILED;
+
 			var trackerConfig = new FTTrackerConfig
 			{
 				n_corr_iterations = _correspondenceIterations,
@@ -1454,6 +2984,9 @@ namespace IV.FormulaTracker
 
 		private async Task<int> InitTrackerAsync(int cameraMode, FTCameraIntrinsics cameraIntrinsics)
 		{
+			if (!NativeBoundaryAgrees())
+				return FTErrorCode.SETUP_FAILED;
+
 			var trackerConfig = new FTTrackerConfig
 			{
 				n_corr_iterations = _correspondenceIterations,
@@ -1479,6 +3012,7 @@ namespace IV.FormulaTracker
 		/// </summary>
 		private void StartNativeTracking()
 		{
+			FrameWriteGuard.Clear();
 			_imageCallbackDelegate = OnImageReceived;
 			FTBridge.FT_SetImageCallback(_imageCallbackDelegate, IntPtr.Zero);
 

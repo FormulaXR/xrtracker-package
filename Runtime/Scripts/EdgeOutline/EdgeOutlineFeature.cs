@@ -23,6 +23,7 @@ namespace IV.FormulaTracker
 		private EdgeOutlinePass _pass;
 		private Material _occlusionMat;
 		private Material _edgeMat;
+		private Material _edgeInternalMat;
 
 		private const string MAIN_CAMERA = "MainCamera";
 
@@ -30,8 +31,12 @@ namespace IV.FormulaTracker
 		{
 			_occlusionMat = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/EdgeOutlineOcclusion"));
 			_edgeMat = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/EdgeOutline"));
+			// The stencil test is a render state of the material, so an outline that shows its internal edges draws with a
+			// material of its own and the state does not depend on which outline was recorded last.
+			_edgeInternalMat = CoreUtils.CreateEngineMaterial(Shader.Find("Hidden/EdgeOutline"));
+			_edgeInternalMat.SetInt(Shader.PropertyToID("_StencilComp"), EdgeOutlinePass.STENCIL_ALWAYS);
 
-			_pass = new EdgeOutlinePass(_occlusionMat, _edgeMat)
+			_pass = new EdgeOutlinePass(_occlusionMat, _edgeMat, _edgeInternalMat)
 			{
 				renderPassEvent = _renderPassEvent
 			};
@@ -49,7 +54,7 @@ namespace IV.FormulaTracker
 			if (EdgeOutlineRenderer.Instances.Count == 0)
 				return;
 
-			if (_occlusionMat == null || _edgeMat == null)
+			if (_occlusionMat == null || _edgeMat == null || _edgeInternalMat == null)
 				return;
 
 			renderer.EnqueuePass(_pass);
@@ -59,37 +64,39 @@ namespace IV.FormulaTracker
 		{
 			CoreUtils.Destroy(_occlusionMat);
 			CoreUtils.Destroy(_edgeMat);
+			CoreUtils.Destroy(_edgeInternalMat);
 		}
 
 		class EdgeOutlinePass : ScriptableRenderPass
 		{
 			private readonly Material _occlusionMat;
 			private readonly Material _edgeMat;
+			private readonly Material _edgeInternalMat;
 			private static readonly int ColorProp = Shader.PropertyToID("_Color");
 			private static readonly int WidthProp = Shader.PropertyToID("_Width");
-			private static readonly int StencilCompProp = Shader.PropertyToID("_StencilComp");
-			private const int STENCIL_NOT_EQUAL = 6;
-			private const int STENCIL_ALWAYS = 8;
+			internal const int STENCIL_ALWAYS = 8;
 			private static readonly MaterialPropertyBlock PropertyBlock = new();
 
 			class PassData
 			{
 				public Material OcclusionMat;
 				public Material EdgeMat;
+				public Material EdgeInternalMat;
 				public Camera Camera;
 				public TextureHandle ColorTarget;
 				public TextureHandle DepthTarget;
 			}
 
-			public EdgeOutlinePass(Material occlusionMat, Material edgeMat)
+			public EdgeOutlinePass(Material occlusionMat, Material edgeMat, Material edgeInternalMat)
 			{
 				_occlusionMat = occlusionMat;
 				_edgeMat = edgeMat;
+				_edgeInternalMat = edgeInternalMat;
 			}
 
 			public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameContext)
 			{
-				if (_occlusionMat == null || _edgeMat == null)
+				if (_occlusionMat == null || _edgeMat == null || _edgeInternalMat == null)
 					return;
 
 				if (EdgeOutlineRenderer.Instances.Count == 0)
@@ -102,6 +109,7 @@ namespace IV.FormulaTracker
 				{
 					passData.OcclusionMat = _occlusionMat;
 					passData.EdgeMat = _edgeMat;
+					passData.EdgeInternalMat = _edgeInternalMat;
 					passData.Camera = cameraData.camera;
 					passData.ColorTarget = resourceData.activeColorTexture;
 					passData.DepthTarget = resourceData.activeDepthTexture;
@@ -173,15 +181,15 @@ namespace IV.FormulaTracker
 							if (!hasCrease && !hasEdge)
 								continue;
 
-							data.EdgeMat.SetInt(StencilCompProp, outline.ShowInternalEdges ? STENCIL_ALWAYS : STENCIL_NOT_EQUAL);
+							Material edgeMat = outline.ShowInternalEdges ? data.EdgeInternalMat : data.EdgeMat;
 							PropertyBlock.SetColor(ColorProp, outline.EdgeColor);
 							PropertyBlock.SetFloat(WidthProp, outline.EdgeWidth);
 							Matrix4x4 matrix = outline.transform.localToWorldMatrix;
 
 							if (hasCrease)
-								cmd.DrawMesh(creaseMesh, matrix, data.EdgeMat, 0, 0, PropertyBlock);
+								cmd.DrawMesh(creaseMesh, matrix, edgeMat, 0, 0, PropertyBlock);
 							if (hasEdge)
-								cmd.DrawMesh(edgeMesh, matrix, data.EdgeMat, 0, 0, PropertyBlock);
+								cmd.DrawMesh(edgeMesh, matrix, edgeMat, 0, 0, PropertyBlock);
 						}
 					});
 				}

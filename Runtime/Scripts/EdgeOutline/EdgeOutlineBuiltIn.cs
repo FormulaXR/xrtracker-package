@@ -17,11 +17,11 @@ namespace IV.FormulaTracker
 		CommandBuffer _cmd;
 		Material _occlusionMat;
 		Material _edgeMat;
+		Material _edgeInternalMat;
 
 		static readonly int ColorProp = Shader.PropertyToID("_Color");
 		static readonly int WidthProp = Shader.PropertyToID("_Width");
 		static readonly int StencilCompProp = Shader.PropertyToID("_StencilComp");
-		const int STENCIL_NOT_EQUAL = 6;
 		const int STENCIL_ALWAYS = 8;
 		MaterialPropertyBlock _propertyBlock;
 
@@ -36,7 +36,13 @@ namespace IV.FormulaTracker
 			if (occlusionShader != null)
 				_occlusionMat = new Material(occlusionShader) { hideFlags = HideFlags.HideAndDontSave };
 			if (edgeShader != null)
+			{
 				_edgeMat = new Material(edgeShader) { hideFlags = HideFlags.HideAndDontSave };
+				// The stencil test is a render state of the material, so an outline that shows its internal edges draws with a
+				// material of its own and the state does not depend on which outline was recorded last.
+				_edgeInternalMat = new Material(edgeShader) { hideFlags = HideFlags.HideAndDontSave };
+				_edgeInternalMat.SetInt(StencilCompProp, STENCIL_ALWAYS);
+			}
 
 			_cmd = new CommandBuffer { name = "EdgeOutline" };
 			_camera.AddCommandBuffer(CameraEvent.AfterForwardOpaque, _cmd);
@@ -50,11 +56,12 @@ namespace IV.FormulaTracker
 			if (_cmd != null) { _cmd.Dispose(); _cmd = null; }
 			if (_occlusionMat != null) { DestroyImmediate(_occlusionMat); _occlusionMat = null; }
 			if (_edgeMat != null) { DestroyImmediate(_edgeMat); _edgeMat = null; }
+			if (_edgeInternalMat != null) { DestroyImmediate(_edgeInternalMat); _edgeInternalMat = null; }
 		}
 
 		void OnPreRender()
 		{
-			if (_cmd == null || _occlusionMat == null || _edgeMat == null)
+			if (_cmd == null || _occlusionMat == null || _edgeMat == null || _edgeInternalMat == null)
 				return;
 
 			_cmd.Clear();
@@ -111,15 +118,15 @@ namespace IV.FormulaTracker
 				if (!hasCrease && !hasEdge)
 					continue;
 
-				_edgeMat.SetInt(StencilCompProp, outline.ShowInternalEdges ? STENCIL_ALWAYS : STENCIL_NOT_EQUAL);
+				Material edgeMat = outline.ShowInternalEdges ? _edgeInternalMat : _edgeMat;
 				_propertyBlock.SetColor(ColorProp, outline.EdgeColor);
 				_propertyBlock.SetFloat(WidthProp, outline.EdgeWidth);
 				Matrix4x4 matrix = outline.transform.localToWorldMatrix;
 
 				if (hasCrease)
-					_cmd.DrawMesh(creaseMesh, matrix, _edgeMat, 0, 0, _propertyBlock);
+					_cmd.DrawMesh(creaseMesh, matrix, edgeMat, 0, 0, _propertyBlock);
 				if (hasEdge)
-					_cmd.DrawMesh(edgeMesh, matrix, _edgeMat, 0, 0, _propertyBlock);
+					_cmd.DrawMesh(edgeMesh, matrix, edgeMat, 0, 0, _propertyBlock);
 			}
 		}
 	}

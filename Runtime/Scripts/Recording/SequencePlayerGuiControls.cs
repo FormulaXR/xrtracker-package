@@ -91,11 +91,24 @@ namespace IV.FormulaTracker.Recording
 
 			GUILayout.EndHorizontal();
 
-			// Row 2: Seek slider
-			int newFrame = (int)GUILayout.HorizontalSlider(
+			// Row 2: Seek slider.
+			//
+			// The seek happens only when a person moved the handle, and that is not a
+			// nicety. A slider carries the frame as a float and hands back what its
+			// handle position means in pixels, so on a long recording one pixel is
+			// several frames and the value that comes back is not the value that went
+			// in. Comparing it against the current frame therefore reads as a drag on
+			// frames where nobody touched anything, and the panel seeks the recording
+			// to a frame it has already played. That is not a display fault: the
+			// tracker then submits a frame it has already published, its clock refuses
+			// the repeat, and a sequence run ends there. Because this panel is drawn
+			// only when the editor draws, a run with a window died where the same run
+			// in a batch host went through untouched.
+			GUI.changed = false;
+			float scrubbed = GUILayout.HorizontalSlider(
 				_feeder.CurrentFrame, 0, _feeder.FrameCount - 1);
-			if (newFrame != _feeder.CurrentFrame)
-				_feeder.Seek(newFrame);
+			if (GUI.changed)
+				_feeder.Seek(Mathf.RoundToInt(scrubbed));
 
 			GUILayout.EndVertical();
 			GUILayout.EndArea();

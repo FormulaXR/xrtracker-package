@@ -35,12 +35,19 @@ namespace IV.FormulaTracker.Recording
 		public int StartIndex => _metadata?.startIndex ?? 0;
 		public int ImageWidth => _metadata?.width ?? 0;
 		public int ImageHeight => _metadata?.height ?? 0;
+		public string SequenceId { get; private set; }
+		public string RecordingIdentity { get; private set; }
 
 		// Depth
 		public bool HasDepth => _metadata?.hasDepth ?? false;
 		public float DepthScale => _metadata?.depthScale ?? 0.001f;
 		public int DepthWidth => _metadata?.depthWidth ?? 0;
 		public int DepthHeight => _metadata?.depthHeight ?? 0;
+
+		// AR replay data (loaded if extrinsics.jsonl exists). A recording that also carries
+		// anchor_history.jsonl keeps the file, and nothing here reads it.
+		private RecordedExtrinsics[] _extrinsics;
+		public bool HasExtrinsics => _extrinsics != null;
 
 		/// <summary>
 		/// Load a sequence from a directory containing sequence.json.
@@ -65,7 +72,190 @@ namespace IV.FormulaTracker.Recording
 				return;
 			}
 
+			TryLoadSequenceIdentity();
+			TryLoadExtrinsics();
+
 			IsValid = true;
+		}
+
+		/// <summary>
+		/// Per-frame camera world pose if extrinsics were recorded. Returns
+		/// default and false when there's no data for this frame.
+		/// </summary>
+		public bool TryGetExtrinsics(int frameIndex, out RecordedExtrinsics ext)
+		{
+			int arrayIndex = frameIndex - StartIndex;
+			if (_extrinsics == null || arrayIndex < 0 || arrayIndex >= _extrinsics.Length)
+			{
+				ext = default;
+				return false;
+			}
+			ext = _extrinsics[arrayIndex];
+			return true;
+		}
+
+		private void TryLoadSequenceIdentity()
+		{
+			SequenceId = Path.GetFileName(
+				_directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+			RecordingIdentity = string.Empty;
+
+			string path = Path.Combine(_directory, "sequence_manifest.json");
+			if (!File.Exists(path))
+				return;
+			try
+			{
+				SequenceManifestIdentity identity =
+					JsonUtility.FromJson<SequenceManifestIdentity>(File.ReadAllText(path));
+				if (identity == null)
+					return;
+				if (!string.IsNullOrWhiteSpace(identity.sequenceId))
+					SequenceId = identity.sequenceId;
+				RecordingIdentity = identity.datasetContentSha256 ?? string.Empty;
+			}
+			catch (Exception e)
+			{
+				Debug.LogWarning($"[SequenceReader] Failed to load sequence identity: {e.Message}");
+			}
+		}
+
+		private void TryLoadExtrinsics()
+		{
+			string path = Path.Combine(_directory, "extrinsics.jsonl");
+			if (!File.Exists(path)) return;
+
+			try
+			{
+				var lines = File.ReadAllLines(path);
+				var arr = new RecordedExtrinsics[FrameCount];
+				var seen = new bool[FrameCount];
+				for (int i = 0; i < FrameCount; ++i)
+				{
+					arr[i] = new RecordedExtrinsics
+					{
+						FrameIndex = StartIndex + i,
+						Status = RecordedObservationStatus.Missing,
+						CoordinateFrame = RecordedPoseCoordinateFrame.NativeWorldFromCamera,
+					};
+				}
+
+				bool hasExtraRows = lines.Length > FrameCount;
+				for (int row = 0; row < lines.Length; ++row)
+				{
+					RecordedExtrinsics parsed = ParseExtrinsics(lines[row]);
+					int arrayIndex = parsed.FrameIndex - StartIndex;
+					if (arrayIndex < 0 || arrayIndex >= FrameCount)
+					{
+						MarkExpectedRow(arr, seen, row, RecordedObservationStatus.WrongFrame);
+						continue;
+					}
+					if (seen[arrayIndex])
+					{
+						parsed.Valid = false;
+						parsed.Status = RecordedObservationStatus.Duplicate;
+						arr[arrayIndex] = parsed;
+						continue;
+					}
+
+					seen[arrayIndex] = true;
+					if (row != arrayIndex && parsed.Status == RecordedObservationStatus.Valid)
+					{
+						parsed.Valid = false;
+						parsed.Status = RecordedObservationStatus.OutOfOrder;
+					}
+					arr[arrayIndex] = parsed;
+				}
+
+				if (hasExtraRows)
+				{
+					for (int i = 0; i < arr.Length; ++i)
+					{
+						if (arr[i].Status != RecordedObservationStatus.Valid)
+							continue;
+						RecordedExtrinsics invalid = arr[i];
+						invalid.Valid = false;
+						invalid.Status = RecordedObservationStatus.OutOfOrder;
+						arr[i] = invalid;
+					}
+				}
+				_extrinsics = arr;
+			}
+			catch (Exception e)
+			{
+				Debug.LogWarning($"[SequenceReader] Failed to load extrinsics.jsonl: {e.Message}");
+			}
+		}
+
+		// Tiny manual JSONL parsers — schema is fully controlled by the writer,
+		// avoids pulling in a JSON library and avoids JsonUtility's quirks
+		// (no `event` keyword field, no `bool` unless int 0/1, etc.).
+		private static RecordedExtrinsics ParseExtrinsics(string line)
+		{
+			bool hasSchemaMarker = line.IndexOf(
+				"\"schemaVersion\"", StringComparison.Ordinal) >= 0;
+			var r = new RecordedExtrinsics
+			{
+				FrameIndex = JsonlScan.ReadInt(line, "frame", int.MinValue),
+				SchemaVersion = hasSchemaMarker
+					? JsonlScan.ReadInt(line, "schemaVersion", int.MinValue)
+					: 1,
+				Status = RecordedObservationStatus.Valid,
+			};
+			string coordinateFrame = JsonlScan.ReadString(
+				line, "coordinateFrame", null);
+			if (r.SchemaVersion == 1 && string.IsNullOrEmpty(coordinateFrame))
+				coordinateFrame = "native_world_from_camera";
+			r.CoordinateFrame = coordinateFrame switch
+			{
+				"native_world_from_camera" => RecordedPoseCoordinateFrame.NativeWorldFromCamera,
+				"unity_world_from_camera" => RecordedPoseCoordinateFrame.UnityWorldFromCamera,
+				_ => RecordedPoseCoordinateFrame.Unsupported,
+			};
+			r.Valid = JsonlScan.ReadInt(line, "valid") != 0;
+			r.TimestampNs = JsonlScan.ReadLong(line, "ts_ns");
+			bool hasPosition = JsonlScan.ReadVec3(line, "t", out r.Position);
+			bool hasRotation = JsonlScan.ReadQuat(line, "q", out r.Rotation);
+			if (r.FrameIndex == int.MinValue)
+				r.Status = RecordedObservationStatus.WrongFrame;
+			else if (r.SchemaVersion != 1 && r.SchemaVersion != 2)
+				r.Status = RecordedObservationStatus.UnsupportedSchemaVersion;
+			else if (r.CoordinateFrame == RecordedPoseCoordinateFrame.Unsupported)
+				r.Status = RecordedObservationStatus.UnsupportedCoordinateFrame;
+			else if (!r.Valid || !hasPosition || !hasRotation || !PoseIsFinite(r.Position, r.Rotation))
+				r.Status = RecordedObservationStatus.Invalid;
+			r.Valid = r.Status == RecordedObservationStatus.Valid;
+			return r;
+		}
+
+		private static void MarkExpectedRow(
+			RecordedExtrinsics[] observations,
+			bool[] seen,
+			int row,
+			RecordedObservationStatus status)
+		{
+			if (row < 0 || row >= observations.Length || seen[row])
+				return;
+			RecordedExtrinsics invalid = observations[row];
+			invalid.Status = status;
+			invalid.Valid = false;
+			observations[row] = invalid;
+		}
+
+		private static bool PoseIsFinite(Vector3 position, Quaternion rotation)
+		{
+			return IsFinite(position.x) && IsFinite(position.y) && IsFinite(position.z) &&
+				IsFinite(rotation.x) && IsFinite(rotation.y) && IsFinite(rotation.z) &&
+				IsFinite(rotation.w) && Quaternion.Dot(rotation, rotation) > 1e-12f;
+		}
+
+		private static bool IsFinite(float value) =>
+			!float.IsNaN(value) && !float.IsInfinity(value);
+
+		[Serializable]
+		private sealed class SequenceManifestIdentity
+		{
+			public string sequenceId;
+			public string datasetContentSha256;
 		}
 
 		/// <summary>

@@ -6,9 +6,21 @@ namespace IV.FormulaTracker.Editor
 	[CustomEditor(typeof(TrackedBodyManager))]
 	public class TrackedBodyManagerEditor : UnityEditor.Editor
 	{
+		private SerializedProperty _enableWorldFrameCoast;
+		private SerializedProperty _savedViewRecoveryCapacity;
+
+		private void OnEnable()
+		{
+			_enableWorldFrameCoast = serializedObject.FindProperty("_enableWorldFrameCoast");
+			_savedViewRecoveryCapacity = serializedObject.FindProperty("_savedViewRecoveryCapacity");
+		}
+
 		public override void OnInspectorGUI()
 		{
-			DrawDefaultInspector();
+			serializedObject.Update();
+			EditorGUILayout.PropertyField(_enableWorldFrameCoast);
+			EditorGUILayout.PropertyField(_savedViewRecoveryCapacity);
+			serializedObject.ApplyModifiedProperties();
 
 			var manager = (TrackedBodyManager)target;
 
@@ -49,9 +61,9 @@ namespace IV.FormulaTracker.Editor
 						var modeStyle = new GUIStyle(EditorStyles.label);
 						if (inARMode)
 							modeStyle.normal.textColor = Color.yellow;
-						else if (body.TrackingStatus == TrackingStatus.Tracking)
+						else if (body.Confidence == TrackingConfidence.Tracked)
 							modeStyle.normal.textColor = Color.green;
-						else if (body.TrackingStatus == TrackingStatus.Poor)
+						else if (body.Confidence == TrackingConfidence.Degraded)
 							modeStyle.normal.textColor = new Color(1f, 0.5f, 0f); // Orange
 						else
 							modeStyle.normal.textColor = Color.gray;

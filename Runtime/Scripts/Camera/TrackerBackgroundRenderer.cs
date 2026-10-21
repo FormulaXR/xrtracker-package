@@ -44,6 +44,9 @@ namespace IV.FormulaTracker
 
 		#region Private Fields
 
+		private const string BACKGROUND_SHADER_NAME = "Hidden/FormulaTracker/BackgroundUnlit";
+		private const string FALLBACK_SHADER_NAME = "Unlit/Texture";
+
 		private Camera _mainCamera;
 		private Camera _backgroundCamera;
 		private Material _backgroundMaterial;
@@ -156,11 +159,28 @@ namespace IV.FormulaTracker
 				return;
 			}
 
-			CreateBackgroundObjects();
+			Shader backgroundShader = FindBackgroundShader();
+			if (backgroundShader == null)
+			{
+				Debug.LogError($"[TrackerBackgroundRenderer] Neither the shader '{BACKGROUND_SHADER_NAME}' nor the shader '{FALLBACK_SHADER_NAME}' was found, so the camera image cannot be drawn and no background plane was created.", this);
+				return;
+			}
+
+			CreateBackgroundObjects(backgroundShader);
 			ConfigureRenderPipeline();
 			_mainCamera.cullingMask &= ~(1 << _backgroundLayer);
 
 			_isSetUp = true;
+		}
+
+		/// <summary>
+		/// Finds the shader the background plane draws with. The shader of the package is preferred because it is always part of a
+		/// player build, while the built-in shader is part of one only when something else references it.
+		/// </summary>
+		private static Shader FindBackgroundShader()
+		{
+			Shader shader = Shader.Find(BACKGROUND_SHADER_NAME);
+			return shader != null ? shader : Shader.Find(FALLBACK_SHADER_NAME);
 		}
 
 		private Camera GetMainCameraFromManager()
@@ -280,7 +300,7 @@ namespace IV.FormulaTracker
 			_backgroundCamera.farClipPlane = _planeDistance + 0.01f;
 		}
 
-		private void CreateBackgroundPlane()
+		private void CreateBackgroundPlane(Shader backgroundShader)
 		{
 			_backgroundPlane = GameObject.CreatePrimitive(PrimitiveType.Quad);
 			_backgroundPlane.name = "FT_BackgroundPlane";
@@ -289,7 +309,7 @@ namespace IV.FormulaTracker
 			if (_backgroundPlane.TryGetComponent(out Collider cld))
 				Destroy(cld);
 
-			_backgroundMaterial = new Material(Shader.Find("Unlit/Texture"))
+			_backgroundMaterial = new Material(backgroundShader)
 			{
 				name = "FT_BackgroundMaterial"
 			};
@@ -302,10 +322,10 @@ namespace IV.FormulaTracker
 			_planeRenderer.receiveShadows = false;
 		}
 
-		private void CreateBackgroundObjects()
+		private void CreateBackgroundObjects(Shader backgroundShader)
 		{
 			CreateBackgroundCamera();
-			CreateBackgroundPlane();
+			CreateBackgroundPlane(backgroundShader);
 			UpdatePlanePosition();
 		}
 

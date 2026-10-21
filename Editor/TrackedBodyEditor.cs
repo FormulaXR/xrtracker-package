@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Reflection;
 using UnityEditor;
 using UnityEngine;
@@ -11,8 +12,6 @@ namespace IV.FormulaTracker.Editor
 	{
 		// Hierarchy
 		private SerializedProperty _trackedMotion;
-		private SerializedProperty _enableValidation;
-		private SerializedProperty _validationThreshold;
 
 		// Model
 		private SerializedProperty _bodyId;
@@ -31,6 +30,10 @@ namespace IV.FormulaTracker.Editor
 
 		// Tracking
 		private SerializedProperty _isStationary;
+		private SerializedProperty _acceptSteadyFits;
+		private SerializedProperty _holdDuringViewDip;
+		private SerializedProperty _holdDuringFastMotion;
+		private SerializedProperty _firstAcceptGuard;
 		private SerializedProperty _smoothTime;
 		private SerializedProperty _rotationStability;
 		private SerializedProperty _positionStability;
@@ -39,8 +42,26 @@ namespace IV.FormulaTracker.Editor
 		private SerializedProperty _depthTracking;
 		private SerializedProperty _useCustomStartThreshold;
 		private SerializedProperty _customQualityToStart;
+		private SerializedProperty _useCustomConfirmThreshold;
+		private SerializedProperty _customQualityToConfirmStart;
+		private SerializedProperty _searchBeforeStart;
+		private SerializedProperty _startSearchPeriodSteps;
+		private SerializedProperty _startSearchMarginBar;
+		private SerializedProperty _startSearchScoreFloor;
+		private SerializedProperty _startSearchReachPixels;
+		private SerializedProperty _startSearchConeHalfAngle;
+		private SerializedProperty _startSearchConeSpacing;
+		private SerializedProperty _startSearchRollRange;
+		private SerializedProperty _startSearchFineHalfAngle;
+		private SerializedProperty _startSearchWindowMargin;
+		private SerializedProperty _startSearchDistanceCount;
+		private SerializedProperty _startSearchScaleDistances;
 		private SerializedProperty _useCustomStopThreshold;
 		private SerializedProperty _customQualityToStop;
+		private SerializedProperty _useCustomSilhouetteStartThreshold;
+		private SerializedProperty _customSilhouetteQualityToStart;
+		private SerializedProperty _useCustomSilhouetteStopThreshold;
+		private SerializedProperty _customSilhouetteQualityToStop;
 
 		// GPU Features
 		private SerializedProperty _enableSilhouetteValidation;
@@ -52,12 +73,21 @@ namespace IV.FormulaTracker.Editor
 		private SerializedProperty _occludeParent;
 		private SerializedProperty _assemblyMode;
 		private SerializedProperty _assemblyQualityToConfirm;
+		private SerializedProperty _attachManually;
+		private SerializedProperty _freeCheck;
+		private SerializedProperty _freeCheckDistanceTolerance;
+		private SerializedProperty _freeCheckAngleTolerance;
+		private SerializedProperty _checkView;
+		private SerializedProperty _checkViewDistance;
+		private SerializedProperty _checkViewAngle;
+		private SerializedProperty _stillnessDistance;
+		private SerializedProperty _stillnessAngle;
+		private SerializedProperty _stillnessWindow;
+		private SerializedProperty _presenceHold;
 
 		// Events
 		private SerializedProperty _onStartTracking;
 		private SerializedProperty _onStopTracking;
-		private SerializedProperty _onBecomeValid;
-		private SerializedProperty _onBecomeInvalid;
 
 		// Foldout states (persisted via EditorPrefs)
 		private static bool _foldoutHierarchy = true;
@@ -83,8 +113,6 @@ namespace IV.FormulaTracker.Editor
 
 			// Hierarchy
 			_trackedMotion = serializedObject.FindProperty("_trackedMotion");
-			_enableValidation = serializedObject.FindProperty("_enableValidation");
-			_validationThreshold = serializedObject.FindProperty("_validationThreshold");
 
 			// Tracking Model
 			_meshFilters = serializedObject.FindProperty("_meshFilters");
@@ -100,6 +128,10 @@ namespace IV.FormulaTracker.Editor
 
 			// Tracking
 			_isStationary = serializedObject.FindProperty("_isStationary");
+			_acceptSteadyFits = serializedObject.FindProperty("_acceptSteadyFits");
+			_holdDuringViewDip = serializedObject.FindProperty("_holdDuringViewDip");
+			_holdDuringFastMotion = serializedObject.FindProperty("_holdDuringFastMotion");
+			_firstAcceptGuard = serializedObject.FindProperty("_firstAcceptGuard");
 			_smoothTime = serializedObject.FindProperty("_smoothTime");
 			_rotationStability = serializedObject.FindProperty("_rotationStability");
 			_positionStability = serializedObject.FindProperty("_positionStability");
@@ -108,8 +140,26 @@ namespace IV.FormulaTracker.Editor
 			_depthTracking = serializedObject.FindProperty("_depthTracking");
 			_useCustomStartThreshold = serializedObject.FindProperty("_useCustomStartThreshold");
 			_customQualityToStart = serializedObject.FindProperty("_customQualityToStart");
+			_useCustomConfirmThreshold = serializedObject.FindProperty("_useCustomConfirmThreshold");
+			_customQualityToConfirmStart = serializedObject.FindProperty("_customQualityToConfirmStart");
+			_searchBeforeStart = serializedObject.FindProperty("_searchBeforeStart");
+			_startSearchPeriodSteps = serializedObject.FindProperty("_startSearchPeriodSteps");
+			_startSearchMarginBar = serializedObject.FindProperty("_startSearchMarginBar");
+			_startSearchScoreFloor = serializedObject.FindProperty("_startSearchScoreFloor");
+			_startSearchReachPixels = serializedObject.FindProperty("_startSearchReachPixels");
+			_startSearchConeHalfAngle = serializedObject.FindProperty("_startSearchConeHalfAngle");
+			_startSearchConeSpacing = serializedObject.FindProperty("_startSearchConeSpacing");
+			_startSearchRollRange = serializedObject.FindProperty("_startSearchRollRange");
+			_startSearchFineHalfAngle = serializedObject.FindProperty("_startSearchFineHalfAngle");
+			_startSearchWindowMargin = serializedObject.FindProperty("_startSearchWindowMargin");
+			_startSearchDistanceCount = serializedObject.FindProperty("_startSearchDistanceCount");
+			_startSearchScaleDistances = serializedObject.FindProperty("_startSearchScaleDistances");
 			_useCustomStopThreshold = serializedObject.FindProperty("_useCustomStopThreshold");
 			_customQualityToStop = serializedObject.FindProperty("_customQualityToStop");
+			_useCustomSilhouetteStartThreshold = serializedObject.FindProperty("_useCustomSilhouetteStartThreshold");
+			_customSilhouetteQualityToStart = serializedObject.FindProperty("_customSilhouetteQualityToStart");
+			_useCustomSilhouetteStopThreshold = serializedObject.FindProperty("_useCustomSilhouetteStopThreshold");
+			_customSilhouetteQualityToStop = serializedObject.FindProperty("_customSilhouetteQualityToStop");
 
 			// GPU Features
 			_enableSilhouetteValidation = serializedObject.FindProperty("_enableSilhouetteValidation");
@@ -121,12 +171,21 @@ namespace IV.FormulaTracker.Editor
 			_occludeParent = serializedObject.FindProperty("_occludeParent");
 			_assemblyMode = serializedObject.FindProperty("_assemblyMode");
 			_assemblyQualityToConfirm = serializedObject.FindProperty("_assemblyQualityToConfirm");
+			_attachManually = serializedObject.FindProperty("_attachManually");
+			_freeCheck = serializedObject.FindProperty("_freeCheck");
+			_freeCheckDistanceTolerance = serializedObject.FindProperty("_freeCheckDistanceTolerance");
+			_freeCheckAngleTolerance = serializedObject.FindProperty("_freeCheckAngleTolerance");
+			_checkView = serializedObject.FindProperty("_checkView");
+			_checkViewDistance = serializedObject.FindProperty("_checkViewDistance");
+			_checkViewAngle = serializedObject.FindProperty("_checkViewAngle");
+			_stillnessDistance = serializedObject.FindProperty("_stillnessDistance");
+			_stillnessAngle = serializedObject.FindProperty("_stillnessAngle");
+			_stillnessWindow = serializedObject.FindProperty("_stillnessWindow");
+			_presenceHold = serializedObject.FindProperty("_presenceHold");
 
 			// Events
 			_onStartTracking = serializedObject.FindProperty("_onStartTracking");
 			_onStopTracking = serializedObject.FindProperty("_onStopTracking");
-			_onBecomeValid = serializedObject.FindProperty("_onBecomeValid");
-			_onBecomeInvalid = serializedObject.FindProperty("_onBecomeInvalid");
 
 			// Initialize icon
 			_addChildMeshesIcon ??= new GUIContent(
@@ -219,29 +278,70 @@ namespace IV.FormulaTracker.Editor
 					EditorGUILayout.EndHorizontal();
 
 					EditorGUILayout.PropertyField(_trackedMotion, new GUIContent("Tracked Motion",
-						"Which degrees of freedom can be optimized relative to parent.\n\n" +
-						"None: Rigid attachment, pose follows parent.\n" +
-						"Any flags: Active tracking with specified DOF."));
+						"Which degrees of freedom the tracker may optimize relative to the parent.\n\n" +
+						"None means a rigid attachment, and the pose follows the parent.\n" +
+						"Any other value means active tracking with the chosen degrees of freedom."));
 
 					// Only show Occlude Parent when parent uses silhouette (edge handles occlusion automatically)
 					if (detectedParent != null && detectedParent.EnableOcclusion
 						&& detectedParent.TrackingMethod != TrackingMethod.Edge)
 					{
 						EditorGUILayout.PropertyField(_occludeParent, new GUIContent("Occlude Parent",
-							"When enabled, this child body will occlude its parent during tracking. " +
-							"Use this when assembling parts that cover portions of the parent."));
+							"When enabled, this child body occludes its parent during tracking. " +
+							"Use it when assembling parts that cover portions of the parent."));
 					}
 
 					EditorGUILayout.Space(4);
 					EditorGUILayout.PropertyField(_assemblyMode, new GUIContent("Assembly Mode",
-						"Enable for parts that will be physically installed during operation. " +
-						"The child won't affect parent pose until quality confirms the part is present."));
+						"Enable it for parts that are physically installed during operation. " +
+						"The child does not affect the parent pose until the quality confirms that the part is present."));
 
 					if (_assemblyMode.boolValue)
 					{
 						EditorGUI.indentLevel++;
-						EditorGUILayout.PropertyField(_assemblyQualityToConfirm, new GUIContent("Quality to Confirm",
-							"Quality threshold (0-1) required to confirm the part is installed."));
+						EditorGUILayout.PropertyField(_attachManually, new GUIContent("Attach Manually",
+							"The part is scored but never joins the parent's solve until the application calls Attach. " +
+							"With this on, Quality to Confirm is not used."));
+						using (new EditorGUI.DisabledScope(_attachManually.boolValue))
+						{
+							EditorGUILayout.PropertyField(_assemblyQualityToConfirm, new GUIContent("Quality to Confirm",
+								"The quality threshold (0-1) that confirms the part is installed."));
+						}
+						if (_attachManually.boolValue)
+						{
+							EditorGUILayout.PropertyField(_freeCheck, new GUIContent("Free Check",
+								"While the part is not attached, it settles its own pose a few millimetres and degrees around its seat, " +
+								"without ever moving the parent, and it is scored where it settled. Read only by a part with no tracked motion."));
+							if (_freeCheck.boolValue)
+							{
+								EditorGUI.indentLevel++;
+								EditorGUILayout.PropertyField(_freeCheckDistanceTolerance, new GUIContent("Distance Tolerance (m)",
+									"How far the centre of the part may settle from its seat and still be in its seat."));
+								EditorGUILayout.PropertyField(_freeCheckAngleTolerance, new GUIContent("Angle Tolerance (degrees)",
+									"How far the part may turn from its seat and still be in its seat."));
+								EditorGUI.indentLevel--;
+							}
+						}
+						EditorGUILayout.PropertyField(_checkView, new GUIContent("Check View",
+							"Optional camera pose that the part is checked from. With it, the presence reading judges the part only " +
+							"while the camera is near this view and still, from the evidence of a whole hold."));
+						if (_checkView.objectReferenceValue != null)
+						{
+							EditorGUI.indentLevel++;
+							EditorGUILayout.PropertyField(_checkViewDistance, new GUIContent("View Distance (m)",
+								"How far the camera may be from the check view and still be near it."));
+							EditorGUILayout.PropertyField(_checkViewAngle, new GUIContent("View Angle (degrees)",
+								"How far the camera's viewing direction may turn from the check view's and still be near it."));
+							EditorGUILayout.PropertyField(_stillnessDistance, new GUIContent("Stillness Distance (m)",
+								"How far the camera may move over the stillness window and still count as still."));
+							EditorGUILayout.PropertyField(_stillnessAngle, new GUIContent("Stillness Angle (degrees)",
+								"How far the camera may turn over the stillness window and still count as still."));
+							EditorGUILayout.PropertyField(_stillnessWindow, new GUIContent("Stillness Window (s)",
+								"How long the camera must stay within the stillness bounds to count as still."));
+							EditorGUILayout.PropertyField(_presenceHold, new GUIContent("Presence Hold (s)",
+								"How long the evidence of one judgement is gathered near the check view with the camera still."));
+							EditorGUI.indentLevel--;
+						}
 						EditorGUI.indentLevel--;
 					}
 				}
@@ -293,13 +393,14 @@ namespace IV.FormulaTracker.Editor
 
 				// Mode and depth
 				EditorGUILayout.PropertyField(_trackingMethod, new GUIContent("Mode",
-					"Silhouette: Foreground/background color separation (requires tracking model).\n" +
-					"Edge: Render-based edge detection (no model file needed).\n" +
-					"Silhouette + Edge: Both combined."));
+					"Silhouette works best when a good part of the outline is visible with good contrast, and it handles faster motion. It needs a tracking model.\n" +
+					"Edge works in low-contrast scenes and when mostly internal edges are visible, such as close to large machinery. It also works with external edges, but it is less resilient to fast motion. It needs no tracking model."));
 
 				EditorGUILayout.PropertyField(_enableDepthTracking, new GUIContent("Enable Depth",
-					"Enable depth tracking using RealSense depth camera. " +
-					"Requires a depth model in the Tracking Model Asset and RealSense camera mode."));
+					"Uses depth measurements to help the fit. The depth comes from LiDAR on iOS devices that have it, " +
+					"from the depth image of Android devices that provide one (through an AROcclusionManager on the AR camera), " +
+					"or from a RealSense camera on Windows (with the image source set to RealSense). " +
+					"It needs a depth model in the Tracking Model Asset."));
 
 				bool silhouetteEnabled = _trackingMethod.enumValueIndex == (int)TrackingMethod.Silhouette;
 				bool needsModel = silhouetteEnabled || _enableDepthTracking.boolValue;
@@ -312,13 +413,14 @@ namespace IV.FormulaTracker.Editor
 					if (silhouetteEnabled)
 					{
 						EditorGUILayout.HelpBox(
-							"Silhouette data encodes the object's visual profile from multiple viewpoints. " +
-							"Pre-generate for faster startup, or leave empty to generate at runtime.",
+							"Silhouette data encodes the visual profile of the object from multiple viewpoints. " +
+							"Generating it in advance gives a faster startup, and leaving the asset empty generates it at runtime.",
 							MessageType.None);
 					}
 
 					DrawModelSettings();
-					EditorGUILayout.PropertyField(_trackingModelAsset, new GUIContent("Asset"));
+					EditorGUILayout.PropertyField(_trackingModelAsset, new GUIContent("Asset",
+						"The tracking model asset that holds the generated silhouette model and depth model."));
 
 					var currentAsset = _trackingModelAsset.objectReferenceValue as TrackingModelAsset;
 
@@ -369,7 +471,7 @@ namespace IV.FormulaTracker.Editor
 			EditorGUILayout.Space(2);
 			var presetProp = _modelSettings.FindPropertyRelative("viewpointPreset");
 			EditorGUILayout.PropertyField(presetProp, new GUIContent("Viewpoint Coverage",
-				"Which viewing angles to include. Reduces model size for objects only viewed from certain directions."));
+				"Which viewing angles the model includes. A smaller range reduces the model size for objects that are only seen from certain directions."));
 
 			bool hasElevationFilter = presetProp.enumValueIndex != (int)ViewpointPreset.FullSphere;
 
@@ -377,35 +479,35 @@ namespace IV.FormulaTracker.Editor
 			{
 				EditorGUI.indentLevel++;
 				EditorGUILayout.PropertyField(_modelSettings.FindPropertyRelative("minElevation"),
-					new GUIContent("Min Elevation", "-90° = below, 0° = side, 90° = above"));
+					new GUIContent("Min Elevation", "The lowest elevation angle in degrees. A value of -90 looks from below, 0 from the side and 90 from above."));
 				EditorGUILayout.PropertyField(_modelSettings.FindPropertyRelative("maxElevation"),
-					new GUIContent("Max Elevation", "-90° = below, 0° = side, 90° = above"));
+					new GUIContent("Max Elevation", "The highest elevation angle in degrees. A value of -90 looks from below, 0 from the side and 90 from above."));
 				EditorGUI.indentLevel--;
 			}
 			else if (presetProp.enumValueIndex == (int)ViewpointPreset.UpperHemisphere)
 			{
-				EditorGUILayout.HelpBox("Top + side views (-10° to 90°). Cuts bottom-up views.", MessageType.None);
+				EditorGUILayout.HelpBox("Top and side views (-10° to 90°). The views from below are cut.", MessageType.None);
 			}
 			else if (presetProp.enumValueIndex == (int)ViewpointPreset.SideRing)
 			{
-				EditorGUILayout.HelpBox("Horizontal views (-20° to 30°). For objects at camera height.", MessageType.None);
+				EditorGUILayout.HelpBox("Horizontal views (-20° to 30°), for objects at camera height.", MessageType.None);
 			}
 
 			// Horizontal filter
 			EditorGUILayout.Space(2);
 			var horizEnabledProp = _modelSettings.FindPropertyRelative("enableHorizontalFilter");
 			EditorGUILayout.PropertyField(horizEnabledProp, new GUIContent("Horizontal Filter",
-				"Limit viewpoints to a horizontal (azimuth) range around a forward direction. Useful for wide/flat objects."));
+				"Limits the viewpoints to a horizontal (azimuth) range around a forward direction. It is useful for wide or flat objects."));
 
 			if (horizEnabledProp.boolValue)
 			{
 				EditorGUI.indentLevel++;
 				EditorGUILayout.PropertyField(_modelSettings.FindPropertyRelative("minHorizontal"),
-					new GUIContent("Min Angle", "Minimum azimuth in degrees (-180 = behind, 0 = forward)"));
+					new GUIContent("Min Angle", "The smallest azimuth in degrees. A value of -180 is behind and 0 is forward."));
 				EditorGUILayout.PropertyField(_modelSettings.FindPropertyRelative("maxHorizontal"),
-					new GUIContent("Max Angle", "Maximum azimuth in degrees (0 = forward, 180 = behind)"));
+					new GUIContent("Max Angle", "The largest azimuth in degrees. A value of 0 is forward and 180 is behind."));
 				EditorGUILayout.PropertyField(_modelSettings.FindPropertyRelative("forwardAxis"),
-					new GUIContent("Forward Axis", "Reference direction for azimuth measurement."));
+					new GUIContent("Forward Axis", "The reference direction that the azimuth is measured from."));
 
 				// Check if forward is parallel to up
 				var fwdAxisEnum = (ForwardAxis)_modelSettings.FindPropertyRelative("forwardAxis").enumValueIndex;
@@ -414,7 +516,7 @@ namespace IV.FormulaTracker.Editor
 				Vector3 upVec = ModelSettings.ForwardAxisToVector(upAxisEnum);
 				if (Mathf.Abs(Vector3.Dot(fwdVec, upVec)) > 0.99f)
 				{
-					EditorGUILayout.HelpBox("Forward axis is parallel to up axis — horizontal filter will be ignored.", MessageType.Warning);
+					EditorGUILayout.HelpBox("The forward axis is parallel to the up axis, so the horizontal filter is ignored.", MessageType.Warning);
 				}
 				EditorGUI.indentLevel--;
 			}
@@ -424,7 +526,7 @@ namespace IV.FormulaTracker.Editor
 			{
 				EditorGUILayout.Space(2);
 				EditorGUILayout.PropertyField(_modelSettings.FindPropertyRelative("upAxis"),
-					new GUIContent("Up Axis", "Which object-local axis points 'up'. Elevation angles are measured relative to this. Change for CAD models with Z-up."));
+					new GUIContent("Up Axis", "Which axis of the object points up. The elevation angles are measured from this direction. Change it for models that were authored with Z pointing up."));
 			}
 
 			EditorGUI.indentLevel--;
@@ -479,6 +581,11 @@ namespace IV.FormulaTracker.Editor
 				DrawDimensionLabels(scaledSize);
 			}
 
+			// The viewpoints belong to the silhouette model and the depth model, which are generated from them.
+			// A body that tracks by the edge method without depth uses neither, so it shows only the bounds.
+			if (!trackedBody.EnableSilhouetteTracking && !trackedBody.EnableDepthTracking)
+				return;
+
 			// Read viewpoint filter settings
 			GetViewpointFilterSettings(out float minElev, out float maxElev,
 				out bool horizEnabled, out float minHoriz, out float maxHoriz,
@@ -518,7 +625,7 @@ namespace IV.FormulaTracker.Editor
 
 			// Draw info label
 			Handles.color = Color.white;
-			string info = $"r={sphereRadius:F3}m  {trackedBody.GetViewpointCount()} views  {trackedBody.GetPointsPerView()} pts";
+			string info = $"radius {sphereRadius:F3} m  {trackedBody.GetViewpointCount()} views  {trackedBody.GetPointsPerView()} points";
 			Handles.Label(center + t.up * (scaledSize.y * 0.5f + 0.05f), info, EditorStyles.whiteBoldLabel);
 		}
 
@@ -687,13 +794,13 @@ namespace IV.FormulaTracker.Editor
 				BeginSectionContent();
 
 				// Initial pose
-				EditorGUILayout.PropertyField(_initialPoseSource, new GUIContent("Initialization"));
+				EditorGUILayout.PropertyField(_initialPoseSource, new GUIContent("Initialization", "How the tracker determines the initial pose of the body."));
 
 				if (_initialPoseSource.enumValueIndex == (int)InitialPoseSource.Viewpoint)
 				{
 					EditorGUILayout.BeginHorizontal();
 					EditorGUILayout.PropertyField(_initialViewpoint, new GUIContent("Viewpoint",
-						"Transform representing the viewing position. If null, uses main camera."));
+						"The transform that represents the viewing position. When it is empty, the tracker uses its camera."));
 
 					if (_initialViewpoint.objectReferenceValue == null)
 					{
@@ -731,27 +838,89 @@ namespace IV.FormulaTracker.Editor
 						}
 					}
 					EditorGUILayout.EndHorizontal();
+
+					DrawUseCurrentPoseAsViewpoint((TrackedBody)target);
 				}
 
 				EditorGUILayout.Space(4);
 
-				// Start threshold
-				EditorGUILayout.PropertyField(_useCustomStartThreshold, new GUIContent("Custom Start Threshold"));
+				// The edge method and the silhouette method each have their own thresholds, because their scores are
+				// on different scales. The inspector shows the pair of the method the body tracks by.
+				bool edgeMethod = _trackingMethod.enumValueIndex == (int)TrackingMethod.Edge;
+				SerializedProperty useStart = edgeMethod ? _useCustomStartThreshold : _useCustomSilhouetteStartThreshold;
+				SerializedProperty startValue = edgeMethod ? _customQualityToStart : _customSilhouetteQualityToStart;
+				SerializedProperty useStop = edgeMethod ? _useCustomStopThreshold : _useCustomSilhouetteStopThreshold;
+				SerializedProperty stopValue = edgeMethod ? _customQualityToStop : _customSilhouetteQualityToStop;
 
-				if (_useCustomStartThreshold.boolValue)
+				// Start threshold
+				EditorGUILayout.PropertyField(useStart, new GUIContent("Custom Start Threshold", "Uses a custom quality threshold to start tracking instead of the default. The edge method and the silhouette method keep separate thresholds, and the inspector shows the one of the method this body tracks by."));
+
+				if (useStart.boolValue)
 				{
 					EditorGUI.indentLevel++;
-					EditorGUILayout.PropertyField(_customQualityToStart, new GUIContent("Quality to Start"));
+					EditorGUILayout.PropertyField(startValue, new GUIContent("Quality to Start", "The quality (0-1) that a start needs on consecutive frames. The default is " + FormatBar(edgeMethod ? TrackerDefaults.EDGE_QUALITY_TO_START : TrackerDefaults.QUALITY_TO_START) + "."));
 					EditorGUI.indentLevel--;
 				}
 
-				// Stop threshold
-				EditorGUILayout.PropertyField(_useCustomStopThreshold, new GUIContent("Custom Stop Threshold"));
+				// Confirm score, which only a body that tracks by the edge method reads
+				if (edgeMethod)
+				{
+					EditorGUILayout.PropertyField(_useCustomConfirmThreshold, new GUIContent("Custom Confirm Score",
+						"The score the last frame of a start must reach. When this is off, the last frame needs only the start score."));
 
-				if (_useCustomStopThreshold.boolValue)
+					if (_useCustomConfirmThreshold.boolValue)
+					{
+						EditorGUI.indentLevel++;
+						EditorGUILayout.PropertyField(_customQualityToConfirmStart, new GUIContent("Quality to Confirm",
+							"The score that the last frame of a start must reach. A start needs the start score on 5 frames in a row and this score on the last one. " +
+							"A value above the start score makes a start surer."));
+						EditorGUI.indentLevel--;
+					}
+
+					// The search around the guide, which only a body that tracks by the edge method reads
+					EditorGUILayout.PropertyField(_searchBeforeStart, new GUIContent("Search Before Start",
+						"Before the first start, the tracker searches a window around the guide for the shape of the body, within a cone around the guide's view (5 degrees by default, a setting below), " +
+						"and refines from the best hypothesis and not from the guide. " +
+						"The search only takes over when the guide stands out of reach of the winner, and a guide in reach starts as it does without the search. " +
+						"The start waits until the same winner was found on three searches in a row, and the start bars still verify the pose. " +
+						"Under pose fusion the guide follows the camera until the start."));
+
+					if (_searchBeforeStart.boolValue)
+					{
+						EditorGUI.indentLevel++;
+						EditorGUILayout.PropertyField(_startSearchPeriodSteps, new GUIContent("Search Period (steps)",
+							"How many tracking steps pass between two searches of the whole image. A value of 1 searches on every step."));
+						EditorGUILayout.PropertyField(_startSearchMarginBar, new GUIContent("Margin Bar",
+							"The margin the winner of a search must reach before a start is let through, as the score of the winner divided by the score of the best hypothesis that stands far from it. A value of 0 sets no margin bar."));
+						EditorGUILayout.PropertyField(_startSearchScoreFloor, new GUIContent("Score Floor",
+							"The score the winner of a search must reach before a start is let through, as the share of the outline points that find an edge of the same direction. A value of 0 sets no score floor."));
+						EditorGUILayout.PropertyField(_startSearchReachPixels, new GUIContent("Reach (pixels)",
+							"How far the guide may stand from the winner of a search, as the median on-screen displacement of the model's points in pixels, and still count as in reach. A guide in reach is left alone and the body starts as it does without the search. A value of 0 treats every guide as out of reach."));
+						EditorGUILayout.PropertyField(_startSearchConeHalfAngle, new GUIContent("Cone Half Angle (degrees)",
+							"The half angle of the cone of views the plugin draws around the guide's view, so 5 degrees at a spacing of 5 degrees is 7 views. The cost of the bank and of every search grows with the number of views."));
+						EditorGUILayout.PropertyField(_startSearchConeSpacing, new GUIContent("Cone Spacing (degrees)",
+							"The spacing between neighbouring views of the cone. The turns in the image plane are made at this step too."));
+						EditorGUILayout.PropertyField(_startSearchRollRange, new GUIContent("Turn Range (degrees)",
+							"The range of the turns in the image plane that the bank holds. The turns are zero and plus and minus each step of the spacing out to this value, so the zero turn is always held."));
+						EditorGUILayout.PropertyField(_startSearchFineHalfAngle, new GUIContent("Fine Half Angle (degrees)",
+							"The half angle of the fine stage, which scores the views within this angle of the winner at a step of 2.5 degrees. A value of 0 switches the fine stage off."));
+						EditorGUILayout.PropertyField(_startSearchWindowMargin, new GUIContent("Window Margin (pixels)",
+							"How far beyond the box of the guide's outline the search looks, in pixels of the search image (its longer side is at most 640 pixels). A template is placed only where its own outline box lies inside this window. A value of 0 searches the whole image."));
+						EditorGUILayout.PropertyField(_startSearchDistanceCount, new GUIContent("Distances",
+							"How many distances the bank holds around the guide's own. One is the guide's own distance, three are 0.92, 1.0 and 1.09 times it, and five add 0.85 and 1.2."));
+						EditorGUILayout.PropertyField(_startSearchScaleDistances, new GUIContent("Scale Distances",
+							"Off, the plugin draws every distance of every view. On, it draws each view once at the guide's own distance and makes the other distances by scaling that drawing, which is a third of the drawings at three distances."));
+						EditorGUI.indentLevel--;
+					}
+				}
+
+				// Stop threshold
+				EditorGUILayout.PropertyField(useStop, new GUIContent("Custom Stop Threshold", "Uses a custom quality threshold to stop tracking instead of the default. The edge method and the silhouette method keep separate thresholds, and the inspector shows the one of the method this body tracks by."));
+
+				if (useStop.boolValue)
 				{
 					EditorGUI.indentLevel++;
-					EditorGUILayout.PropertyField(_customQualityToStop, new GUIContent("Quality to Stop"));
+					EditorGUILayout.PropertyField(stopValue, new GUIContent("Quality to Stop", "The averaged quality (0-1) below which tracking is lost. The default is " + FormatBar(edgeMethod ? TrackerDefaults.EDGE_LOSE_TRACKING_THRESHOLD : TrackerDefaults.LOSE_TRACKING_THRESHOLD) + "."));
 					EditorGUI.indentLevel--;
 				}
 
@@ -763,15 +932,17 @@ namespace IV.FormulaTracker.Editor
 
 					using (new EditorGUI.DisabledScope(trackedBody.IsTracking))
 					{
-						if (GUILayout.Button("Force Start"))
+						if (GUILayout.Button(new GUIContent("Force Start", "Starts tracking at once, without waiting for the quality bars.")))
 							trackedBody.ForceStartTracking();
 					}
 
-					using (new EditorGUI.DisabledScope(!trackedBody.IsTracking))
-					{
-						if (GUILayout.Button("Reset"))
-							trackedBody.ResetTracking();
-					}
+					if (GUILayout.Button(new GUIContent("Reset",
+						"Returns the body to the pose it was placed at, stops tracking and keeps what the body learned.")))
+						trackedBody.ResetTracking();
+
+					if (GUILayout.Button(new GUIContent("Reset and forget",
+						"Returns the body to the pose it was placed at, stops tracking and forgets what the body learned.")))
+						trackedBody.ResetTracking(true);
 
 					EditorGUILayout.EndHorizontal();
 				}
@@ -798,17 +969,17 @@ namespace IV.FormulaTracker.Editor
 				{
 					EditorGUILayout.PropertyField(_isStationary,
 						new GUIContent("Stationary",
-							"Object is fixed in the world. Enables AR pose fusion: SLAM anchors the pose after stabilization, " +
-							"tracker provides corrections when quality is high."));
+							"The object is fixed in the world. This enables AR pose fusion. After stabilization the pose is held in the world frame of the AR session, " +
+							"and the tracker provides corrections when the quality is high."));
 
 					if (_isStationary.boolValue)
 					{
 						EditorGUI.indentLevel++;
 						EditorGUILayout.PropertyField(_smoothTime,
 							new GUIContent("Smooth Time",
-								"Time in seconds to smooth pose corrections. 0 = instant."));
+								"The time in seconds over which pose corrections are smoothed. A value of 0 applies them instantly."));
 						EditorGUILayout.HelpBox(
-							"Requires AR Foundation for SLAM. Falls back to standard tracking if unavailable.",
+							"This needs AR Foundation for SLAM. Without it, tracking falls back to the standard method.",
 							MessageType.Info);
 						EditorGUI.indentLevel--;
 					}
@@ -817,7 +988,7 @@ namespace IV.FormulaTracker.Editor
 				EditorGUILayout.PropertyField(_rotationStability);
 				EditorGUILayout.PropertyField(_positionStability);
 
-				// Silhouette modality settings
+				// Silhouette settings
 				if (silhouetteEnabled)
 				{
 					EditorGUILayout.Space(4);
@@ -826,24 +997,24 @@ namespace IV.FormulaTracker.Editor
 					{
 						EditorGUILayout.PropertyField(
 							_silhouetteTracking.FindPropertyRelative("_edgeTolerance"),
-							new GUIContent("Edge Tolerance",
-								"How tolerant the tracker is to blurry or indistinct edges. " +
-								"Higher values are more forgiving for thin objects."));
+							new GUIContent("Outline Color Separation",
+								"How cleanly the tracker expects the colors of the object and the colors of the background to separate across the outline. " +
+								"A higher value expects a clean separation. A lower value allows each side of the outline to hold some colors of the other side."));
 						EditorGUILayout.PropertyField(
 							_silhouetteTracking.FindPropertyRelative("_updateResponsiveness"),
 							new GUIContent("Update Responsiveness",
-								"How aggressively the tracker adjusts pose each frame. " +
-								"Lower = cautious, higher = faster convergence but may overshoot."));
+								"How strongly the tracker adjusts the pose on each frame. " +
+								"A lower value is more cautious. A higher value converges faster but may overshoot."));
 						// Min Continuous Distance, Function Length, Histogram Bins,
 						// Pyramid Scales, and Standard Deviations hidden from inspector.
 						// Still settable via script (SilhouetteTrackingSettings / MultiScaleSettings).
 					}
 				}
 
-				// Edge modality settings
+				// Edge settings
 				if (edgeEnabled)
 				{
-					DrawEdgeModalityContent();
+					DrawEdgeModalityContent(hasParent);
 				}
 
 				// Show depth tracking settings only when depth is enabled
@@ -851,19 +1022,19 @@ namespace IV.FormulaTracker.Editor
 				{
 					EditorGUILayout.Space(4);
 					EditorGUILayout.PropertyField(_depthTracking, new GUIContent("Depth Tracking",
-						"Advanced tuning for RealSense depth-based tracking. Adjust correspondence matching and occlusion handling."), true);
+						"Advanced tuning for depth-based tracking. These settings control the correspondence matching and the occlusion handling."), true);
 				}
 
 				EndSectionContent();
 			}
 		}
 
-		private void DrawEdgeModalityContent()
+		private void DrawEdgeModalityContent(bool hasParent)
 		{
 			EditorGUILayout.Space(4);
 			_edgeModality.isExpanded = EditorGUILayout.Foldout(_edgeModality.isExpanded,
 				new GUIContent("Edge Tracking",
-					"Tuning parameters for render-based edge tracking."), true);
+					"Tuning parameters for edge tracking."), true);
 
 			if (_edgeModality.isExpanded)
 			{
@@ -873,28 +1044,12 @@ namespace IV.FormulaTracker.Editor
 					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_searchRadius"));
 					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_minGradient"));
 					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_sampleStep"));
-					var useKeyframeProp = _edgeModality.FindPropertyRelative("_useKeyframe");
-					EditorGUILayout.PropertyField(useKeyframeProp,
-						new GUIContent("Use Keyframe",
-							"Reuse edge sites across frames instead of re-rendering every frame. " +
-							"Reduces jitter by keeping a stable set of 3D reference points."));
-					if (useKeyframeProp.boolValue)
-					{
-						EditorGUI.indentLevel++;
-						EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_keyframeRotationDeg"),
-							new GUIContent("Rotation Threshold (deg)",
-								"Rotation threshold in degrees to trigger keyframe refresh."));
-						EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_keyframeTranslation"),
-							new GUIContent("Translation Threshold (m)",
-								"Translation threshold in meters to trigger keyframe refresh."));
-						EditorGUI.indentLevel--;
-					}
-					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_usePerSiteThreshold"),
-						new GUIContent("Per-Site Contrast Threshold",
-							"ViSP-style adaptive threshold. Each site stores its own contrast bar set " +
-							"on first successful search; subsequent frames use half of it as the floor " +
-							"(min: min_gradient × kappa). Off = legacy global 2 × min_gradient × kappa floor. " +
-							"Designed to help survival on weak-contrast edges. Takes effect on next body registration."));
+					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_keyframeRotationDeg"),
+						new GUIContent("Rotation Threshold (degrees)",
+							"How far the camera may rotate about its own centre, in degrees, before the tracker draws the edges of the model again. From 10 to 20 degrees, and a smaller value that a scene saved is read as 10."));
+					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_keyframeTranslation"),
+						new GUIContent("Translation Threshold (m)",
+							"How far the camera must move, in meters, from the pose of a stored view before the tracker draws the edges of the model again. The default is 0.03."));
 					EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_enableCreaseEdges"));
 					if (_edgeModality.FindPropertyRelative("_enableCreaseEdges").boolValue)
 					{
@@ -902,11 +1057,109 @@ namespace IV.FormulaTracker.Editor
 						EditorGUILayout.PropertyField(_edgeModality.FindPropertyRelative("_creaseEdgeAngle"));
 						EditorGUI.indentLevel--;
 					}
+					if (!hasParent)
+					{
+						// Read only by a stationary body that tracks by the edge method under AR pose fusion, so it lives here
+						// and not under Stationary, which every tracking method shows. It is greyed while the body is not stationary.
+						using (new EditorGUI.DisabledScope(!_isStationary.boolValue))
+						{
+							EditorGUILayout.PropertyField(_acceptSteadyFits,
+								new GUIContent("Accept Steady Fits",
+									"Applies with AR pose fusion to a stationary body that tracks by the edge method. " +
+									"The body also accepts a fit that the coverage score passes, on the same start and stop bars as without AR, while the fit stays close to where AR predicts the object. " +
+									"This helps soft or low-contrast real images keep the lock, keep correcting and show Tracked. " +
+									"With AR, a stationary body also keeps its shown pose still while part of the object is hidden or the view is clearly weaker than usual, and takes new fits again once the view recovers. " +
+									"With AR, a stationary body also keeps its shown pose while the object moves fast on screen. " +
+									"With AR, a stationary body also takes its first fit only after 3 solves in a row agree within 8 millimeters and 2 degrees. " +
+									"The three rows below switch the last three of these off one by one. " +
+									"With this off, the body accepts only the fits that the strict confidence check passes."));
+
+							// The three holds are part of what Accept Steady Fits turns on, so they are greyed while it is off.
+							using (new EditorGUI.DisabledScope(!_acceptSteadyFits.boolValue))
+							{
+								EditorGUI.indentLevel++;
+								EditorGUILayout.PropertyField(_holdDuringViewDip,
+									new GUIContent("Hold During View Dips",
+										"With AR, the shown pose stays still while the view health is below 0.8 of the usual level for this view, until the view has been healthy again for 5 steps in a row. " +
+										"A dip can only begin after 30 healthy steps in a row. " +
+										"With this off, new fits keep moving the pose while part of the object is hidden. " +
+										"It needs Accept Steady Fits."));
+								EditorGUILayout.PropertyField(_holdDuringFastMotion,
+									new GUIContent("Hold During Fast Motion",
+										"With AR, no new fit is stored while AR moves the object more than 6 pixels per frame on screen, counted for a camera with a focal length of 450 pixels. " +
+										"The shown pose is carried by AR until the camera slows down. " +
+										"The first fit and the first 30 steps after the start are never held back. " +
+										"With this off, fits taken during fast motion keep moving the pose. " +
+										"It needs Accept Steady Fits."));
+								EditorGUILayout.PropertyField(_firstAcceptGuard,
+									new GUIContent("First Accept Guard",
+										"With AR, before the first fit is shown, 3 solves in a row must agree within 8 millimeters and 2 degrees. " +
+										"The guard lets go after 30 steps, so a fit that never settles is still taken in the end. " +
+										"With this off, the first fit that passes the other checks is taken at once. " +
+										"It needs Accept Steady Fits."));
+								EditorGUI.indentLevel--;
+							}
+						}
+					}
+					if (Application.isPlaying)
+						DrawEdgeSettingsHeldNote();
 					// Search Radius Scales and Standard Deviations hidden from inspector.
 					// Still settable via script (EdgeTrackingSettings).
+					EditorGUILayout.Space(2);
+					using (new EditorGUI.DisabledScope(Application.isPlaying))
+					{
+						if (GUILayout.Button(new GUIContent("Reset Edge Settings to Defaults",
+							"Puts every edge setting of this body back to the package default. " +
+							"The silhouette, score and confirm settings are not touched. " +
+							"The change can be undone.")))
+						{
+							ResetEdgeSettings();
+						}
+					}
 				}
 				catch (System.ArgumentException) { }
 			}
+		}
+
+		/// <summary>
+		/// While the scene plays, says which edge settings the tracker holds for the body, because the tracker reads them when the body registers
+		/// and an edit made now does not always reach it.
+		/// </summary>
+		private void DrawEdgeSettingsHeldNote()
+		{
+			if (!(target is TrackedBody body))
+				return;
+			string held = body.RegisteredEdgeSettingsSummary;
+			if (held.Length == 0)
+				return;
+
+			EditorGUILayout.Space(2);
+			if (!body.EdgeSettingsDifferFromRegistration)
+			{
+				EditorGUILayout.HelpBox("The tracker holds " + held + ".", MessageType.Info);
+			}
+			else if (body.LiveEdgeSettingsUnavailable)
+			{
+				EditorGUILayout.HelpBox("The tracker still holds " + held + ". This plugin build cannot change edge settings while the body is registered. " +
+					"Disable and enable the component, or play the scene again, to apply the new values.", MessageType.Warning);
+			}
+			else
+			{
+				EditorGUILayout.HelpBox("The tracker holds " + held + ". A new depth edge threshold, search radius, minimum gradient, sample step or crease edges setting " +
+					"reaches it at the next tracking step. Every other edge setting is read when the body registers, so it needs the component to be disabled and enabled again.",
+					MessageType.Info);
+			}
+		}
+
+		private void ResetEdgeSettings()
+		{
+			serializedObject.ApplyModifiedProperties();
+			foreach (Object selected in targets)
+			{
+				if (selected is TrackedBody body)
+					EdgeSettingsReset.Reset(body);
+			}
+			serializedObject.Update();
 		}
 
 		private void DrawGPUFeaturesSection()
@@ -917,7 +1170,7 @@ namespace IV.FormulaTracker.Editor
 				BeginSectionContent();
 
 				EditorGUILayout.HelpBox(
-					"These features use additional GPU resources. Consider disabling on mobile devices.",
+					"These features use additional GPU resources. On mobile devices, consider turning them off.",
 					MessageType.None);
 
 				bool isSilhouette = _trackingMethod.enumValueIndex == (int)TrackingMethod.Silhouette;
@@ -928,27 +1181,27 @@ namespace IV.FormulaTracker.Editor
 				}
 
 				EditorGUILayout.PropertyField(_enableTextureTracking, new GUIContent("Texture Tracking",
-					"Adds feature-based tracking (ORB keypoints) in addition to silhouette tracking.\n\n" +
-					"IMPORTANT: This does NOT use the Unity texture/material. Instead, it detects visual features " +
-					"directly from the camera image on the object's visible surfaces.\n\n" +
-					"Best for objects with distinctive surface patterns (text, logos, scratches, textures). " +
-					"Not useful for uniform/solid-colored objects."));
+					"Adds tracking by the surface appearance of the object, as a complement to the Silhouette or the Edge method.\n\n" +
+					"This does not use the Unity texture or material of the object. Instead, the tracker detects distinctive points " +
+					"on the visible surface of the object in the camera image and matches them against the rendered model.\n\n" +
+					"It works best for objects with distinctive surface patterns such as text, logos, scratches or textures, and it adds little for uniform or solid-colored objects. " +
+					"It works only while the camera is farther from the object than about 1.5 times the radius of the object."));
 
-				// Edge modality handles occlusion automatically via the shared normal renderer
+				// The edge method handles occlusion automatically through the shared normal renderer
 				bool isEdge = _trackingMethod.enumValueIndex == (int)TrackingMethod.Edge;
 				if (!isEdge)
 				{
 					EditorGUILayout.PropertyField(_enableOcclusion, new GUIContent("Occlusion",
-						"Enable depth-based occlusion handling for this body's tracking. " +
-						"Silhouette points hidden behind other objects (occluders) are ignored.\n\n" +
-						"Child bodies with 'Occlude Parent' enabled will automatically occlude this body."));
+						"Handles occlusion for this body's tracking, based on depth. " +
+						"Silhouette points that are hidden behind other objects (occluders) are ignored.\n\n" +
+						"Child bodies with Occlude Parent enabled occlude this body automatically."));
 
 					// Show occlusion settings only when occlusion is enabled
 					if (_enableOcclusion.boolValue)
 					{
 						EditorGUI.indentLevel++;
 						EditorGUILayout.PropertyField(_occlusionSettings, new GUIContent("Settings",
-							"Occlusion detection parameters. Adjust threshold for tight assemblies where parts are close together."), true);
+							"The occlusion detection parameters. Adjust the threshold for tight assemblies where parts are close together."), true);
 						EditorGUI.indentLevel--;
 					}
 				}
@@ -967,26 +1220,39 @@ namespace IV.FormulaTracker.Editor
 				EditorGUILayout.PropertyField(_onStartTracking, new GUIContent("On Start Tracking"));
 				EditorGUILayout.PropertyField(_onStopTracking, new GUIContent("On Stop Tracking"));
 
-				// Validation section - only for child bodies
-				if (hasParent)
-				{
-					EditorGUILayout.Space(8);
-					EditorGUILayout.PropertyField(_enableValidation, new GUIContent("Enable Validation",
-						"When enabled, fires OnBecomeValid/OnBecomeInvalid events based on tracking quality."));
-
-					if (_enableValidation.boolValue)
-					{
-						EditorGUI.indentLevel++;
-						EditorGUILayout.PropertyField(_validationThreshold, new GUIContent("Threshold",
-							"Quality threshold (0.5-1.0). Object becomes valid when quality exceeds this value."));
-						EditorGUILayout.Space(4);
-						EditorGUILayout.PropertyField(_onBecomeValid, new GUIContent("On Become Valid"));
-						EditorGUILayout.PropertyField(_onBecomeInvalid, new GUIContent("On Become Invalid"));
-						EditorGUI.indentLevel--;
-					}
-				}
-
 				EndSectionContent();
+			}
+		}
+
+		/// <summary>
+		/// The button that keeps the pose the body is shown at as its initial Viewpoint. It is offered in play mode, while the body
+		/// tracks and starts from a Viewpoint. The Viewpoint is set when play mode ends, because a change made in play mode is lost.
+		/// </summary>
+		private void DrawUseCurrentPoseAsViewpoint(TrackedBody body)
+		{
+			if (targets.Length != 1 ||
+				!InitialViewpointCapture.IsOffered(Application.isPlaying, body.IsTracking, body.InitialPoseSource))
+				return;
+
+			using (new EditorGUI.DisabledScope(body.InitialViewpoint == null))
+			{
+				var content = new GUIContent("Use Current Pose as Initial Viewpoint",
+					"Keeps the pose this body is shown at, seen from the camera, and sets the Viewpoint to it when play mode ends. " +
+					"A body that starts from the Viewpoint then starts at this pose.");
+				if (GUILayout.Button(content))
+				{
+					if (InitialViewpointCapture.TryCapture(body, out string message))
+						Debug.Log("[XRTracker] " + message);
+					else
+						Debug.LogWarning("[XRTracker] " + message);
+				}
+			}
+
+			if (InitialViewpointCapture.HasPending(body))
+			{
+				EditorGUILayout.HelpBox(
+					"The Viewpoint is set to the kept pose when play mode ends, and the scene is then marked as changed.",
+					MessageType.Info);
 			}
 		}
 
@@ -1002,10 +1268,24 @@ namespace IV.FormulaTracker.Editor
 
 			using (new EditorGUI.DisabledScope(true))
 			{
-				EditorGUILayout.EnumPopup("Status", trackedBody.TrackingStatus);
+				EditorGUILayout.EnumPopup("Confidence", trackedBody.Confidence);
+				EditorGUILayout.EnumPopup("Confidence Reason", trackedBody.ConfidenceReason);
 
-				// Primary quality metrics (averaged)
-				EditorGUILayout.Slider("Tracking Quality", trackedBody.TrackingQuality, 0f, 1f);
+				// Primary quality metrics (averaged). Under pose fusion the start reads the coverage score and the hold reads the
+				// registration margin, so the two scores are shown apart, each with its bar. Otherwise both are one score.
+				if (trackedBody.StartReadsCoverage)
+				{
+					EditorGUILayout.Slider(new GUIContent("Start Score", "The coverage score the start reads on five steps in a row."),
+						trackedBody.StartScore, 0f, 1f);
+					EditorGUILayout.LabelField("  Start Bar", trackedBody.QualityToStartTracking.ToString("F2"));
+					EditorGUILayout.Slider(new GUIContent("Hold Confidence", "The registration margin that keeps or gives up the lock, averaged over the quality window."),
+						trackedBody.TrackingQuality, 0f, 1f);
+					EditorGUILayout.LabelField("  Stop Bar", trackedBody.QualityToStopTracking.ToString("F2"));
+				}
+				else
+				{
+					EditorGUILayout.Slider("Tracking Quality", trackedBody.TrackingQuality, 0f, 1f);
+				}
 				if (trackedBody.EnableSilhouetteTracking || status.HasRegionModality)
 					EditorGUILayout.Slider("Shape Quality", trackedBody.ShapeQuality, 0f, 1f);
 
@@ -1014,15 +1294,8 @@ namespace IV.FormulaTracker.Editor
 				{
 					EditorGUILayout.Space(2);
 					EditorGUILayout.LabelField("Silhouette Tracking", EditorStyles.miniLabel);
-					EditorGUILayout.Slider("  Visibility", trackedBody.Visibility, 0f, 1f);
-					EditorGUILayout.LabelField("  Valid/Max Lines", $"{status.n_valid_lines} / {status.n_max_lines}");
-
-					// Raw metrics for debugging
-					EditorGUILayout.Space(2);
-					EditorGUILayout.LabelField("Raw Metrics", EditorStyles.miniLabel);
-					EditorGUILayout.Slider("  Histogram Discrim.", status.histogram_discriminability, 0f, 1f);
-					EditorGUILayout.FloatField("  Variance StdDev", status.variance_stddev);
-					EditorGUILayout.FloatField("  Mean Variance", status.mean_variance);
+					EditorGUILayout.Slider("  Silhouette Visibility", trackedBody.SilhouetteVisibility, 0f, 1f);
+					EditorGUILayout.LabelField("  Valid / Maximum Lines", $"{status.n_valid_lines} / {status.n_max_lines}");
 				}
 
 				// Depth tracking metrics (only show if depth tracking is enabled)
@@ -1031,9 +1304,9 @@ namespace IV.FormulaTracker.Editor
 					EditorGUILayout.Space(2);
 					EditorGUILayout.LabelField("Depth Tracking", EditorStyles.miniLabel);
 					EditorGUILayout.Slider("  Visibility", trackedBody.DepthVisibility, 0f, 1f);
-					EditorGUILayout.LabelField("  Valid/Max Points", $"{status.n_valid_points} / {status.n_max_points}");
-					EditorGUILayout.FloatField("  Mean Corr. Distance", status.mean_correspondence_distance);
-					EditorGUILayout.FloatField("  Corr. Distance StdDev", status.correspondence_distance_stddev);
+					EditorGUILayout.LabelField("  Valid / Maximum Points", $"{status.n_valid_points} / {status.n_max_points}");
+					EditorGUILayout.FloatField("  Mean Correspondence Distance", status.mean_correspondence_distance);
+					EditorGUILayout.FloatField("  Distance Standard Deviation", status.correspondence_distance_stddev);
 				}
 
 				// Edge tracking metrics (only show if edge tracking is enabled)
@@ -1041,23 +1314,14 @@ namespace IV.FormulaTracker.Editor
 				{
 					EditorGUILayout.Space(2);
 					EditorGUILayout.LabelField("Edge Tracking", EditorStyles.miniLabel);
-					EditorGUILayout.Slider("  Edge Quality (gating)", trackedBody.EdgeTrackingQuality, 0f, 1f);
-					EditorGUILayout.Slider("  Edge Coverage (valid/total)", trackedBody.EdgeCoverageAverage, 0f, 1f);
+					EditorGUILayout.Slider(trackedBody.StartReadsCoverage ? "  Instant Hold Confidence" : "  Instant Quality", trackedBody.InstantQuality, 0f, 1f);
+					EditorGUILayout.Slider("  Sites That Agree (30 frames)", trackedBody.EdgeCoverageAverage, 0f, 1f);
 					float trackingPct = status.n_total_edge_sites > 0 ? 100f * status.n_tracking_edge_sites / status.n_total_edge_sites : 0f;
+					EditorGUILayout.LabelField("  Valid / Total Sites", $"{status.n_valid_edge_points} / {status.n_total_edge_sites}");
 					EditorGUILayout.LabelField("  Tracking Coverage", $"{status.n_tracking_edge_sites} / {status.n_total_edge_sites} ({trackingPct:F0}%)");
 					EditorGUILayout.Slider("  Projection Error (°)", trackedBody.ProjectionErrorAverage, 0f, 90f);
-					EditorGUILayout.FloatField("  Median Residual (px)", status.mean_edge_residual);
-					EditorGUILayout.LabelField("  Alt. quality (not gating)", EditorStyles.miniLabel);
-					EditorGUILayout.Slider("    From Residual", trackedBody.EdgeResidualQuality, 0f, 1f);
-					EditorGUILayout.Slider("    From Projection Error", trackedBody.EdgeProjectionQuality, 0f, 1f);
+					EditorGUILayout.FloatField("  Median Residual (pixels)", status.mean_edge_residual);
 				}
-			}
-
-			// Force start button (outside disabled scope so it's clickable)
-			if (!trackedBody.IsTracking)
-			{
-				if (GUILayout.Button("Force Start Tracking"))
-					trackedBody.ForceStartTracking();
 			}
 
 			// Auto-repaint during play mode
@@ -1066,6 +1330,8 @@ namespace IV.FormulaTracker.Editor
 				Repaint();
 			}
 		}
+
+		private static string FormatBar(float bar) => bar.ToString("0.##", CultureInfo.InvariantCulture);
 
 		private static string FormatBytes(long bytes)
 		{

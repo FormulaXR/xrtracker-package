@@ -3,19 +3,19 @@ using System;
 namespace IV.FormulaTracker
 {
 	/// <summary>
-	/// License tiers. Mirrors C++ LicenseTier (OEM maps to Commercial on the native side).
+	/// License tiers. The values match the native plugin, which reports an OEM license as Commercial.
 	/// </summary>
 	public enum LicenseTier
 	{
 		None = 0,
-		[Obsolete("Free tier deprecated. Use Developer tier.")] Free = 1,
-		[Obsolete("Trial tier deprecated. Use Developer tier.")] Trial = 2,
+		[Obsolete("The Free tier is retired. Use the Developer tier.")] Free = 1,
+		[Obsolete("The Trial tier is retired. Use the Developer tier.")] Trial = 2,
 		Developer = 3,
 		Commercial = 4,
 	}
 
 	/// <summary>
-	/// License validation status. Mirrors C++ LicenseStatus.
+	/// License validation status. The values match the native plugin.
 	/// </summary>
 	public enum LicenseStatus
 	{
@@ -29,9 +29,9 @@ namespace IV.FormulaTracker
 	}
 
 	/// <summary>
-	/// Specifies which degrees of freedom (DOF) are free to be optimized for attached bodies.
-	/// None means rigid attachment (pose follows parent). Any flags enabled means active tracking.
-	/// Bits: 0=rot_x, 1=rot_y, 2=rot_z, 3=trans_x, 4=trans_y, 5=trans_z
+	/// Specifies which degrees of freedom are free to be optimized for attached bodies.
+	/// None means rigid attachment (the pose follows the parent). Any flag that is set means active tracking.
+	/// The flags use bit 0 for rotation X, bit 1 for rotation Y, bit 2 for rotation Z, bit 3 for translation X, bit 4 for translation Y and bit 5 for translation Z.
 	/// </summary>
 	[Flags]
 	public enum TrackedMotion
@@ -68,13 +68,13 @@ namespace IV.FormulaTracker
 	/// </summary>
 	public enum ImageSource
 	{
-		/// <summary>Native OpenCV webcam capture. Requires calibration file.</summary>
+		/// <summary>Native webcam capture. A calibration file gives the best accuracy, and without one the camera intrinsics are estimated from the field of view.</summary>
 		Native = 0,
 		/// <summary>Unity feeds frames (AR Foundation). No calibration file needed.</summary>
 		Injected = 1,
 		/// <summary>Intel RealSense SDK capture (color + depth). No calibration file needed.</summary>
 		RealSense = 2,
-		/// <summary>Recorded image sequence. C++ reads PNGs directly — no C# texture overhead.</summary>
+		/// <summary>Recorded image sequence. The native plugin reads the PNG files directly, so no texture copy is needed in managed code.</summary>
 		Sequence = 3
 	}
 

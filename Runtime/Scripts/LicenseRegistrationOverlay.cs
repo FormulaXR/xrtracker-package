@@ -4,8 +4,9 @@ namespace IV.FormulaTracker
 {
 	/// <summary>
 	/// Full-screen blocking overlay shown when no license is present.
-	/// Prompts the user to register for a free Developer license.
-	/// No heartbeat is sent — tracking is already blocked by CanUpdatePose().
+	/// In the Unity Editor it points to the license registration menu.
+	/// In a built app it tells the end user that the app has no license and that its developer needs to register one.
+	/// It sends no heartbeat, because tracking is already blocked by CanUpdatePose().
 	/// </summary>
 	[AddComponentMenu("")] // Hidden from Add Component menu
 	[DefaultExecutionOrder(1000)]
@@ -42,7 +43,9 @@ namespace IV.FormulaTracker
 				titleContent, _titleStyle);
 
 			// Body
-			string body = "Register for a free Developer license:\nTools > XRTracker > License Registration";
+			string body = Application.isEditor
+				? "Register for a free Developer license under\nTools > XRTracker > License Registration"
+				: "This app has no XRTracker license.\nThe developer of this app needs to register one.";
 			var bodyContent = new GUIContent(body);
 			float bodyWidth = 500f;
 			float bodyHeight = _bodyStyle.CalcHeight(bodyContent, bodyWidth);
@@ -69,7 +72,7 @@ namespace IV.FormulaTracker
 			{
 				GUIUtility.systemCopyBuffer = machineId;
 				_copiedMessageTimer = COPIED_MESSAGE_DURATION;
-				Debug.Log($"[XRTracker] Machine ID copied to clipboard: {machineId}");
+				Debug.Log($"[XRTracker] Machine ID copied to the clipboard ({machineId}).");
 			}
 		}
 

@@ -9,6 +9,7 @@ namespace IV.FormulaTracker.Editor
 	{
 		private SerializedProperty _autoPlay;
 		private SerializedProperty _loop;
+		private SerializedProperty _holdStartFrame;
 		private SerializedProperty _useCustomStart;
 		private SerializedProperty _rangeStart;
 		private SerializedProperty _useCustomEnd;
@@ -18,6 +19,7 @@ namespace IV.FormulaTracker.Editor
 		{
 			_autoPlay = serializedObject.FindProperty("_autoPlay");
 			_loop = serializedObject.FindProperty("_loop");
+			_holdStartFrame = serializedObject.FindProperty("_holdStartFrame");
 			_useCustomStart = serializedObject.FindProperty("_useCustomStart");
 			_rangeStart = serializedObject.FindProperty("_rangeStart");
 			_useCustomEnd = serializedObject.FindProperty("_useCustomEnd");
@@ -41,7 +43,11 @@ namespace IV.FormulaTracker.Editor
 			EditorGUILayout.LabelField("Playback", EditorStyles.boldLabel);
 
 			EditorGUILayout.PropertyField(_autoPlay);
-			EditorGUILayout.PropertyField(_loop);
+			using (new EditorGUI.DisabledScope(_holdStartFrame.boolValue))
+				EditorGUILayout.PropertyField(_loop);
+			EditorGUILayout.PropertyField(_holdStartFrame, new GUIContent("Hold Start Frame",
+				"Repeats the start frame of the range on every step and loops on it, so the tracker refines the pose on that one image " +
+				"again and again. The end of the range and the Loop setting are not used while this is on."));
 
 			// Frame range
 			EditorGUILayout.Space(4);
@@ -58,8 +64,9 @@ namespace IV.FormulaTracker.Editor
 
 			// Custom end
 			EditorGUILayout.BeginHorizontal();
-			EditorGUILayout.PropertyField(_useCustomEnd, new GUIContent("Custom End"));
-			using (new EditorGUI.DisabledScope(!_useCustomEnd.boolValue))
+			using (new EditorGUI.DisabledScope(_holdStartFrame.boolValue))
+				EditorGUILayout.PropertyField(_useCustomEnd, new GUIContent("Custom End"));
+			using (new EditorGUI.DisabledScope(!_useCustomEnd.boolValue || _holdStartFrame.boolValue))
 				EditorGUILayout.PropertyField(_rangeEnd, GUIContent.none, GUILayout.Width(80));
 			EditorGUILayout.EndHorizontal();
 
@@ -76,7 +83,14 @@ namespace IV.FormulaTracker.Editor
 				_rangeEnd.intValue = _rangeStart.intValue;
 
 			// Info
-			if (feeder.FrameCount > 0 && (_useCustomStart.boolValue || _useCustomEnd.boolValue))
+			if (_holdStartFrame.boolValue)
+			{
+				int heldFrame = _useCustomStart.boolValue ? _rangeStart.intValue : 0;
+				EditorGUILayout.HelpBox(
+					$"Every step runs on frame {heldFrame}.",
+					MessageType.Info);
+			}
+			else if (feeder.FrameCount > 0 && (_useCustomStart.boolValue || _useCustomEnd.boolValue))
 			{
 				int effStart = _useCustomStart.boolValue ? _rangeStart.intValue : 0;
 				int effEnd = _useCustomEnd.boolValue ? _rangeEnd.intValue : maxFrame;

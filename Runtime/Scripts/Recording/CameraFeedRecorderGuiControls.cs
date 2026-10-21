@@ -27,7 +27,7 @@ namespace IV.FormulaTracker.Recording
 
 		public enum Anchor { TopLeft, TopRight, BottomLeft, BottomRight }
 
-		private bool IsRecording => FTBridge.FT_IsRecording() != 0;
+		private bool IsRecording => RecordingSession.IsRecording;
 
 		private void InitStyles()
 		{
@@ -83,12 +83,12 @@ namespace IV.FormulaTracker.Recording
 
 				if (GUILayout.Button("Stop Recording", _buttonStyle))
 				{
-					int count = FTBridge.FT_StopRecording();
+					int count = RecordingSession.Stop();
 					Debug.Log($"[Recording] Stopped. {count} frames saved to: {_currentOutputDir}");
 				}
 
 				GUILayout.FlexibleSpace();
-				GUILayout.Label($"{FTBridge.FT_GetRecordedFrameCount()} frames", _labelStyle);
+				GUILayout.Label($"{RecordingSession.FrameCount} frames", _labelStyle);
 			}
 			else
 			{
@@ -96,8 +96,16 @@ namespace IV.FormulaTracker.Recording
 				{
 					string baseDir = System.IO.Path.Combine(Application.persistentDataPath, "Recordings");
 					_currentOutputDir = System.IO.Path.Combine(baseDir, DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss"));
-					FTBridge.FT_StartRecording(_currentOutputDir);
-					Debug.Log($"[Recording] Started: {_currentOutputDir}");
+					int result = RecordingSession.Start(_currentOutputDir);
+					if (result == FTErrorCode.OK)
+					{
+						Debug.Log($"[Recording] Started: {_currentOutputDir}");
+					}
+					else
+					{
+						Debug.LogError($"[Recording] Start failed with error {result}: {_currentOutputDir}");
+						_currentOutputDir = null;
+					}
 				}
 			}
 

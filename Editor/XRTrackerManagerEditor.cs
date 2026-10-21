@@ -4,7 +4,7 @@ using UnityEngine;
 namespace IV.FormulaTracker.Editor
 {
 	/// <summary>
-	/// Clean custom editor for XRTrackerManager.
+	/// Custom inspector for XRTrackerManager.
 	/// </summary>
 	[CustomEditor(typeof(XRTrackerManager))]
 	[CanEditMultipleObjects]
@@ -32,7 +32,13 @@ namespace IV.FormulaTracker.Editor
 
 		// AR Foundation (conditional)
 		private SerializedProperty _useARPoseFusion;
-		private SerializedProperty _useAnchor;
+		private SerializedProperty _followArWorldJumps;
+
+		private const string FOLLOW_AR_WORLD_JUMPS_TOOLTIP =
+			"When the AR session moves its world, the AR camera jumps farther in one frame than a hand can move a phone " +
+			"(more than 25 centimetres and faster than 5 metres per second, or more than 45 degrees and faster than 900 degrees per second). " +
+			"With this on, every tracked body is carried into the new world, so it keeps its place relative to the camera. " +
+			"With this off, a body can lose the object after such a jump.";
 
 		private void OnEnable()
 		{
@@ -55,7 +61,7 @@ namespace IV.FormulaTracker.Editor
 
 			// AR Foundation fields (may not exist if HAS_AR_FOUNDATION not defined)
 			_useARPoseFusion = serializedObject.FindProperty("_useARPoseFusion");
-			_useAnchor = serializedObject.FindProperty("_useAnchor");
+			_followArWorldJumps = serializedObject.FindProperty("_followArWorldJumps");
 		}
 
 		public override void OnInspectorGUI()
@@ -76,7 +82,7 @@ namespace IV.FormulaTracker.Editor
 			DrawLicenseSection(manager);
 			DrawImageSourceSection(isNativeMode, isRealSenseMode, isSequenceMode);
 			DrawTrackerSettingsSection();
-			DrawReferencesSection(isNativeMode);
+			DrawReferencesSection();
 			DrawRuntimeStatusSection(manager);
 
 			serializedObject.ApplyModifiedProperties();
@@ -88,7 +94,9 @@ namespace IV.FormulaTracker.Editor
 			EditorGUILayout.LabelField("License", EditorStyles.boldLabel);
 
 			EditorGUILayout.PropertyField(_embeddedLicense, new GUIContent("License File",
-				"Drag a .lic file here. If empty, you must register for a free Developer license."));
+				"Drag a .lic file here to embed the license in the build. " +
+				"When it is empty, XRTracker looks for a .lic file in StreamingAssets and then in the persistent data folder. " +
+				"Without a license, tracking stays blocked until you register one under Tools > XRTracker > License Registration."));
 
 			// Runtime license info
 			if (Application.isPlaying)
@@ -134,13 +142,13 @@ namespace IV.FormulaTracker.Editor
 				EditorGUILayout.LabelField("RealSense Resolution", EditorStyles.miniBoldLabel);
 
 				EditorGUILayout.PropertyField(_realSenseColorResolution,
-					new GUIContent("Color Resolution", "Color camera resolution. Higher = more detail for validation, lower FPS."));
+					new GUIContent("Color Resolution", "Color camera resolution. A higher resolution gives more detail for validation and a lower frame rate."));
 				EditorGUILayout.PropertyField(_realSenseDepthResolution,
-					new GUIContent("Depth Resolution", "Depth camera resolution. Higher = better depth tracking, lower FPS."));
+					new GUIContent("Depth Resolution", "Depth camera resolution. A higher resolution gives better depth tracking and a lower frame rate."));
 
 				EditorGUILayout.HelpBox(
-					"Note: 1080p color and 720p depth are limited to 30fps. " +
-					"Resolution must be set before initialization.",
+					"Color at 1080p and depth at 720p are limited to 30 frames per second. " +
+					"The resolution must be set before initialization.",
 					MessageType.Info);
 			}
 			else if (isSequenceMode)
@@ -178,15 +186,15 @@ namespace IV.FormulaTracker.Editor
 					if (fallback != null)
 					{
 						EditorGUILayout.HelpBox(
-							"No calibration file assigned. Using default from package Resources.",
+							"No calibration file is assigned, so XRTracker uses the default from the package Resources.",
 							MessageType.Info);
 					}
 					else
 					{
 						EditorGUILayout.HelpBox(
-							"No calibration file assigned and no default found. " +
-							"Tracking will use default intrinsics, which may reduce accuracy. " +
-							"Use XRTracker > Camera Calibration to calibrate your camera.",
+							"No calibration file is assigned and no default exists. " +
+							"Tracking will use estimated camera intrinsics, which may reduce accuracy. " +
+							"Use Tools > XRTracker > Camera Calibration to calibrate your camera.",
 							MessageType.Warning);
 					}
 				}
@@ -202,7 +210,7 @@ namespace IV.FormulaTracker.Editor
 				{
 					EditorGUI.indentLevel++;
 					EditorGUILayout.PropertyField(_autoSelectFallbackToFirst,
-						new GUIContent("Fallback to First", "If specified camera not found, use first available camera"));
+						new GUIContent("Fallback to First", "When the named camera is not found, XRTracker uses the first available camera."));
 					EditorGUI.indentLevel--;
 				}
 
@@ -231,33 +239,53 @@ namespace IV.FormulaTracker.Editor
 			EditorGUILayout.Space(8);
 			EditorGUILayout.LabelField("Tracker Settings", EditorStyles.boldLabel);
 
-			EditorGUILayout.PropertyField(_targetFps, new GUIContent("Target FPS"));
-			EditorGUILayout.PropertyField(_correspondenceIterations, new GUIContent("Correspondence Iterations"));
-			EditorGUILayout.PropertyField(_updateIterations, new GUIContent("Update Iterations"));
-
-			// Edge render resolution kept at 512 default — not exposed in inspector
-			// to avoid confusion. Can still be set via script: _edgeRenderResolution.
+			EditorGUILayout.PropertyField(_targetFps, new GUIContent("Target FPS",
+				"Target frames per second of the tracking loop. " +
+				"With the Injected (AR) image source this value matters only when Limit Fps is turned on in the AR Foundation Camera Feeder, " +
+				"which then passes frames to the tracker at no more than this rate."));
+			EditorGUILayout.PropertyField(_correspondenceIterations, new GUIContent("Correspondence Iterations",
+				"Number of correspondence iterations per frame. A higher value is more accurate and slower."));
+			EditorGUILayout.PropertyField(_updateIterations, new GUIContent("Update Iterations",
+				"Number of pose update iterations per correspondence. A higher value refines the pose more and is slower."));
 		}
 
-		private void DrawReferencesSection(bool isNativeMode)
+		private void DrawReferencesSection()
 		{
 			EditorGUILayout.Space(8);
 			EditorGUILayout.LabelField("References", EditorStyles.boldLabel);
 
 			EditorGUILayout.PropertyField(_mainCamera, new GUIContent("Main Camera"));
 
-			// AR Foundation settings (only available in Injected mode with AR Foundation)
-			if (_useARPoseFusion != null && !isNativeMode)
+			// AR Foundation settings. They are greyed out for a camera source that provides no camera pose,
+			// because the manager discards them for that source at runtime whatever is serialized here.
+			if (_useARPoseFusion != null)
 			{
-				EditorGUILayout.PropertyField(_useARPoseFusion,
-					new GUIContent("AR Foundation Fusion", "Use AR Foundation's world tracking to stabilize pose when tracking quality drops"));
+				var source = (ImageSource)_imageSource.enumValueIndex;
+				string directory = _sequenceDirectory != null ? _sequenceDirectory.stringValue : null;
+				PoseFusionSourcePolicy.Verdict verdict = PoseFusionSourcePolicy.Evaluate(source, directory);
+				bool discarded = PoseFusionSourcePolicy.Discards(verdict);
 
-				if (_useAnchor != null && _useARPoseFusion.boolValue)
+				using (new EditorGUI.DisabledScope(discarded))
+				{
+					EditorGUILayout.PropertyField(_useARPoseFusion,
+						new GUIContent("AR Foundation Fusion", "Use AR Foundation's world tracking to stabilize pose when tracking quality drops"));
+
+				}
+
+				// The row belongs to pose fusion, so it shows only while fusion is on and the camera source can carry it.
+				if (_followArWorldJumps != null && _useARPoseFusion.boolValue && !discarded)
 				{
 					EditorGUI.indentLevel++;
-					EditorGUILayout.PropertyField(_useAnchor,
-						new GUIContent("Use AR Anchor", "Use AR session anchor to stabilize the tracking reference frame. Requires an ARAnchorManager in the scene. When off, tracking operates in world-origin coordinates (less stable over time)."));
+					EditorGUILayout.PropertyField(_followArWorldJumps,
+						new GUIContent("Follow AR World Jumps", FOLLOW_AR_WORLD_JUMPS_TOOLTIP));
 					EditorGUI.indentLevel--;
+				}
+
+				if (discarded)
+				{
+					EditorGUILayout.HelpBox(
+						"Pose fusion needs an AR camera pose. This camera source has none, so it is ignored.",
+						MessageType.Info);
 				}
 			}
 		}
@@ -284,10 +312,6 @@ namespace IV.FormulaTracker.Editor
 				// Show camera count
 				int cameraCount = manager.AvailableCameras?.Length ?? 0;
 				EditorGUILayout.IntField("Available Cameras", cameraCount);
-
-				// Global histogram peak (adaptive quality reference)
-				float globalPeak = TrackedBodyManager.Instance?.GlobalHistogramPeak ?? TrackerDefaults.HISTOGRAM_GOOD;
-				EditorGUILayout.Slider("Global Histogram Peak", globalPeak, 0f, 1f);
 			}
 
 			// Enumerate cameras button (play mode only)

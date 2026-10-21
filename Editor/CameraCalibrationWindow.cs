@@ -110,12 +110,12 @@ namespace IV.FormulaTracker
 
 			if (result != FTErrorCode.OK)
 			{
-				_statusMessage = "Failed to open camera. Is it in use by the tracker?";
+				_statusMessage = "The camera could not be opened. Another application or the tracker may be using it.";
 				return;
 			}
 
 			_state = CalibState.Previewing;
-			_statusMessage = "Preview active. Click 'Start Capture' when ready.";
+			_statusMessage = "The preview is active. Click 'Start Capture' when you are ready.";
 		}
 
 		private void StopCamera()
@@ -149,7 +149,7 @@ namespace IV.FormulaTracker
 				inst._imageBuffer = new byte[width * height * 3];
 			}
 
-			// Flip vertically (OpenCV top-down → Unity bottom-up)
+			// Flip vertically (the camera image is top-down, a Unity texture is bottom-up)
 			int rowSize = width * 3;
 			for (int y = 0; y < height; y++)
 			{
@@ -182,7 +182,7 @@ namespace IV.FormulaTracker
 			if (cornersFound == 0)
 			{
 				_stableFrameCount = 0;
-				_statusMessage = "No board detected";
+				_statusMessage = "No checkerboard is visible to the camera.";
 				return;
 			}
 
@@ -211,14 +211,14 @@ namespace IV.FormulaTracker
 			if (!diverse)
 			{
 				_stableFrameCount = 0;
-				_statusMessage = "Move to a new position";
+				_statusMessage = "Move the checkerboard to a new position.";
 				return;
 			}
 
 			_stableFrameCount++;
 			if (_stableFrameCount < RequiredStableFrames)
 			{
-				_statusMessage = $"Hold steady ({_stableFrameCount}/{RequiredStableFrames})";
+				_statusMessage = $"Hold the checkerboard steady ({_stableFrameCount}/{RequiredStableFrames}).";
 				return;
 			}
 
@@ -226,7 +226,7 @@ namespace IV.FormulaTracker
 			_captureCount = FTBridge.FT_Calib_Capture();
 			_captureCenters.Add(center);
 			_stableFrameCount = 0;
-			_statusMessage = $"Captured! ({_captureCount}/{CAPTURE_TARGET})";
+			_statusMessage = $"Captured ({_captureCount}/{CAPTURE_TARGET}).";
 
 			if (_captureCount >= CAPTURE_TARGET)
 			{
@@ -245,13 +245,13 @@ namespace IV.FormulaTracker
 
 			if (_rmsError < 0)
 			{
-				_statusMessage = "Calibration failed. Try capturing more diverse poses.";
+				_statusMessage = "The calibration failed. Try capturing the checkerboard in more varied poses.";
 				return;
 			}
 
 			_state = CalibState.Done;
 			string quality = _rmsError < 0.5f ? "Excellent" : _rmsError < 1.0f ? "Good" : "Acceptable";
-			_statusMessage = $"RMS Error: {_rmsError:F2} px ({quality})";
+			_statusMessage = $"The calibration finished with an RMS error of {_rmsError:F2} pixels ({quality}).";
 		}
 
 		private void SaveCalibration()
@@ -260,7 +260,7 @@ namespace IV.FormulaTracker
 
 			// Find the TextAsset currently assigned on the manager (if any)
 			string path = null;
-			var manager = FindObjectOfType<XRTrackerManager>();
+			var manager = FindFirstObjectByType<XRTrackerManager>();
 			if (manager != null)
 			{
 				var so = new SerializedObject(manager);
@@ -351,7 +351,34 @@ namespace IV.FormulaTracker
 			}
 
 			Debug.Log($"[CameraCalibration] Saved calibration for '{deviceName}' to {path}");
-			_statusMessage = $"Saved to {path}";
+			_statusMessage = $"The calibration was saved to {path}.";
+		}
+
+		/// <summary>
+		/// Finds the checkerboard image through the asset database, so that it is found wherever the package is installed
+		/// (embedded, from git, from a registry or copied under Assets). Returns the path on disk, or null when no image is found.
+		/// </summary>
+		private static string FindPatternFile()
+		{
+			const string PATTERN_NAME = "checkerboard_9x6";
+			string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+			string fallback = null;
+			foreach (string guid in AssetDatabase.FindAssets(PATTERN_NAME))
+			{
+				string assetPath = AssetDatabase.GUIDToAssetPath(guid);
+				if (!assetPath.EndsWith("/" + PATTERN_NAME + ".png", StringComparison.OrdinalIgnoreCase))
+					continue;
+
+				UnityEditor.PackageManager.PackageInfo package = UnityEditor.PackageManager.PackageInfo.FindForAssetPath(assetPath);
+				string path = package != null
+					? Path.Combine(package.resolvedPath, assetPath.Substring(package.assetPath.Length).TrimStart('/'))
+					: Path.Combine(projectRoot, assetPath);
+				if (package != null && package.name == "com.formulaxr.tracker")
+					return path;
+				fallback ??= path;
+			}
+
+			return fallback;
 		}
 
 		private void OnGUI()
@@ -361,12 +388,11 @@ namespace IV.FormulaTracker
 			EditorGUILayout.LabelField("Print a 9x6 checkerboard (10x7 squares) on matte paper.", EditorStyles.wordWrappedLabel);
 			if (GUILayout.Button("Open Pattern", GUILayout.Width(100)))
 			{
-				string pkgPath = "Packages/com.formulaxr.tracker/Editor/Resources/checkerboard_9x6.png";
-				string absPath = Path.GetFullPath(pkgPath);
-				if (File.Exists(absPath))
+				string absPath = FindPatternFile();
+				if (absPath != null && File.Exists(absPath))
 					Application.OpenURL("file:///" + absPath.Replace("\\", "/"));
 				else
-					Debug.LogWarning($"[CameraCalibration] Checkerboard not found at {absPath}");
+					Debug.LogWarning("[CameraCalibration] The checkerboard pattern was not found in the package.");
 			}
 			EditorGUILayout.EndHorizontal();
 
@@ -443,7 +469,7 @@ namespace IV.FormulaTracker
 						_stableFrameCount = 0;
 						_captureCenters.Clear();
 						_state = CalibState.Capturing;
-						_statusMessage = "Move checkerboard to different positions";
+						_statusMessage = "Move the checkerboard to different positions.";
 					}
 					if (GUILayout.Button("Stop", GUILayout.Height(30)))
 						StopCamera();
@@ -466,7 +492,7 @@ namespace IV.FormulaTracker
 						if (_captureCount >= 3)
 							RunCalibration();
 						else
-							_statusMessage = "Need at least 3 captures";
+							_statusMessage = "The calibration needs at least 3 captures.";
 					}
 					if (GUILayout.Button("Cancel", GUILayout.Height(30)))
 					{
@@ -482,7 +508,7 @@ namespace IV.FormulaTracker
 					EditorGUILayout.LabelField("Results", EditorStyles.boldLabel);
 
 					string quality = _rmsError < 0.5f ? "Excellent" : _rmsError < 1.0f ? "Good" : "Acceptable";
-					EditorGUILayout.LabelField($"RMS Error: {_rmsError:F3} px ({quality})");
+					EditorGUILayout.LabelField("RMS Error", $"{_rmsError:F3} pixels ({quality})");
 
 					EditorGUILayout.Space(4);
 					EditorGUILayout.LabelField("Undistorted Intrinsics (normalized):");
@@ -508,7 +534,7 @@ namespace IV.FormulaTracker
 						_captureCount = 0;
 						_captureCenters.Clear();
 						_state = CalibState.Previewing;
-						_statusMessage = "Ready for new calibration";
+						_statusMessage = "The window is ready for a new calibration.";
 					}
 					EditorGUILayout.EndHorizontal();
 

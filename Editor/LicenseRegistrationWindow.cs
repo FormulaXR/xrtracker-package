@@ -8,7 +8,7 @@ namespace IV.FormulaTracker.Editor
 {
 	/// <summary>
 	/// Editor window for registering a free Developer license.
-	/// Menu: Tools > XRTracker > License Registration
+	/// It opens from the menu Tools > XRTracker > License Registration.
 	/// </summary>
 	public class LicenseRegistrationWindow : EditorWindow
 	{
@@ -43,22 +43,23 @@ namespace IV.FormulaTracker.Editor
 			EditorGUILayout.Space(4);
 			EditorGUILayout.LabelField(
 				"XRTracker is a markerless 3D object tracking SDK for Unity. " +
-				"Import your CAD model or 3D mesh and track real-world objects with " +
-				"6DoF pose estimation and sub-centimeter precision \u2014 no markers, scanning, or cloud training required.",
+				"Import your CAD model or 3D mesh and track real-world objects in AR, " +
+				"with no markers, scanning, or cloud training required.",
 				EditorStyles.wordWrappedLabel);
 			EditorGUILayout.Space(8);
 
 			EditorGUILayout.LabelField("Register for a Free Developer License", EditorStyles.boldLabel);
 			EditorGUILayout.Space(4);
 			EditorGUILayout.HelpBox(
-				"The Developer license is free, valid for 1 year (renewable), and includes a visible watermark. " +
-				"For development and evaluation only \u2014 production use requires a Commercial license.\n\n" +
+				"The Developer license is free, valid for 1 year from registration, and renewable at no cost. " +
+				"It includes a visible watermark and is for development, evaluation, and internal testing only. " +
+				"Production use requires a Commercial license.\n\n" +
 				"Features included:\n" +
 				"\u2022 Silhouette, Edge, and Depth tracking modalities\n" +
-				"\u2022 AR Foundation integration (ARKit / ARCore)\n" +
-				"\u2022 Windows, iOS, and Android support\n" +
+				"\u2022 AR Foundation integration on iOS and Android\n" +
+				"\u2022 Windows, iOS, and Android support, plus macOS (experimental)\n" +
 				"\u2022 Built-in model generation from any mesh\n" +
-				"\u2022 No time limits \u2014 full functionality",
+				"\u2022 Unlimited tracking, with no session time limit",
 				MessageType.Info);
 
 			EditorGUILayout.Space(8);
@@ -174,8 +175,8 @@ namespace IV.FormulaTracker.Editor
 
 			if (request.result != UnityWebRequest.Result.Success)
 			{
-				_statusMessage = $"Registration failed: {request.error}\n\n" +
-				                 "You can also register manually at docs.xrtracker.net";
+				_statusMessage = $"Registration failed ({request.error}).\n\n" +
+				                 "Check your internet connection and try again, or contact support@formulaxr.com.";
 				_statusType = MessageType.Error;
 				request.Dispose();
 				return;
@@ -188,7 +189,7 @@ namespace IV.FormulaTracker.Editor
 			var response = JsonUtility.FromJson<RegistrationResponse>(responseText);
 			if (string.IsNullOrEmpty(response?.license))
 			{
-				_statusMessage = "Invalid response from server. Please try again or register at docs.xrtracker.net";
+				_statusMessage = "The server sent an invalid response. Please try again, or contact support@formulaxr.com.";
 				_statusType = MessageType.Error;
 				return;
 			}
@@ -209,7 +210,7 @@ namespace IV.FormulaTracker.Editor
 			}
 			catch (Exception e)
 			{
-				_statusMessage = $"Failed to import license: {e.Message}";
+				_statusMessage = $"The license could not be imported ({e.Message}).";
 				_statusType = MessageType.Error;
 			}
 		}
@@ -275,7 +276,7 @@ namespace IV.FormulaTracker.Editor
 			}
 			catch (Exception e)
 			{
-				_statusMessage = $"Failed to save license: {e.Message}";
+				_statusMessage = $"The license could not be saved ({e.Message}).";
 				_statusType = MessageType.Error;
 			}
 		}
